@@ -123,10 +123,10 @@ enum node_type {
 
 
 
-int f2fs_alloc_block_free_lists(struct super_block *sb);
-void f2fs_delete_free_lists(struct super_block *sb);
+int f2fs_alloc_block_free_lists(struct f2fs_sb_info *sbi);
+void f2fs_delete_free_lists(struct f2fs_sb_info *sbi);
 
-struct f2fs_range_node *f2fs_alloc_blocknode(struct super_block *sb);
+struct f2fs_range_node *f2fs_alloc_blocknode(void);
 /*
 struct nova_range_node *nova_alloc_inode_node(struct super_block *sb);
 struct nova_range_node *nova_alloc_dir_node(struct super_block *sb);
@@ -141,7 +141,7 @@ void nova_free_dir_node(struct nova_range_node *bnode);
 void nova_free_vma_item(struct super_block *sb,
 	struct vma_item *item);
 */
-extern void f2fs_init_blockmap(struct super_block *sb, int recovery);
+int f2fs_init_blockmap(struct f2fs_sb_info *sbi, int recovery);
 extern int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num);
 /*
 extern int nova_free_data_blocks(struct super_block *sb,
@@ -186,7 +186,7 @@ extern void nova_destroy_range_node_tree(struct super_block *sb,
 	struct rb_root *tree);
 */
 
-extern struct f2fs_range_node *f2fs_alloc_range_node(struct super_block *sb);
+extern struct f2fs_range_node *f2fs_alloc_range_node(void);
 extern void f2fs_free_range_node(struct f2fs_range_node *node);
 
 #endif

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+
 /*
  * fs/f2fs/super.c
  *
@@ -38,6 +39,7 @@
 #include <trace/events/f2fs.h>
 
 static struct kmem_cache *f2fs_inode_cachep;
+static struct kmem_cache *f2fs_rangenode_cachep;	//konna
 
 #ifdef CONFIG_F2FS_FAULT_INJECTION
 
@@ -1330,15 +1332,25 @@ static void f2fs_put_super(struct super_block *sb)
 #ifdef CONFIG_UNICODE
 	utf8_unload(sb->s_encoding);
 #endif
-	if(sbi->virt_addr){//konna
-		f2fs_delete_free_lists(sb);
-		sbi->virt_addr = NULL;
-    }
 	if(test_opt(sbi, PMEM)){//konna
+		f2fs_delete_free_lists(sbi);
 		f2fs_put_pm_info(sbi);
 	}	
 	kfree(sbi);
 }
+
+/* konna */
+struct f2fs_range_node *f2fs_alloc_range_node(void){
+    struct f2fs_range_node *p;
+
+    p = (struct f2fs_range_node *)kmem_cache_zalloc(f2fs_rangenode_cachep, GFP_NOFS);
+    return p;
+}
+
+void f2fs_free_range_node(struct f2fs_range_node *node){
+    kmem_cache_free(f2fs_rangenode_cachep, node);
+}
+/* konna */
 
 int f2fs_sync_fs(struct super_block *sb, int sync)
 {
@@ -3636,13 +3648,15 @@ try_onemore:
 		err = f2fs_get_pm_info(sbi);
 		if(err)
 			goto free_utf8;
+		
+		err = f2fs_alloc_block_free_lists(sbi);
+		if(err){
+			f2fs_err(sbi, "Failed to allocate block free lists");
+			goto free_pm_dev;
+		}
 	}
 	/* konna */
-	err = f2fs_alloc_block_free_lists(sbi);
-	if(err){
-		f2fs_err(sbi, "Failed to allocate block free lists");
-		goto free_pm_dev;
-	}
+	
 
 #ifdef CONFIG_QUOTA
 	sb->dq_op = &f2fs_quota_operations;
@@ -3816,6 +3830,15 @@ try_onemore:
 			 err);
 		goto free_nm;
 	}
+
+	/* konna */
+	if(test_opt(sbi, PMEM)){
+		err = f2fs_init_blockmap(sbi, 0);
+		if(err){
+			goto free_nm;
+		}
+	}
+	/* konna */
 
 	/* For write statistics */
 	if (sb->s_bdev->bd_part)
@@ -4033,10 +4056,14 @@ free_percpu:
 free_bio_info:
 	for (i = 0; i < NR_PAGE_TYPE; i++)
 		kvfree(sbi->write_io[i]);
-free_free_list://konna
-	f2fs_delete_free_lists(sb);
+	//konna
+	if(test_opt(sbi,PMEM)){
+		f2fs_delete_free_lists(sbi);
+	}
 free_pm_dev://konna
-	f2fs_put_pm_info(sbi);
+	if(test_opt(sbi,PMEM)){
+		f2fs_put_pm_info(sbi);
+	}
 free_utf8:
 #ifdef CONFIG_UNICODE
 	utf8_unload(sb->s_encoding);
@@ -4112,6 +4139,21 @@ static int __init init_inodecache(void)
 	return 0;
 }
 
+/* konna */
+static int __init init_rangenode_cache(void){
+    f2fs_rangenode_cachep = kmem_cache_create("f2fs_rangenode_cache",
+            sizeof(struct f2fs_range_node), 0, 
+			(SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD), NULL);
+    if (!f2fs_rangenode_cachep)
+        return -ENOMEM;
+    return 0;
+}
+static void destroy_rangenode_cache(void){
+    rcu_barrier();
+    kmem_cache_destroy(f2fs_rangenode_cachep);
+}
+/* konna */
+
 static void destroy_inodecache(void)
 {
 	/*
@@ -4137,9 +4179,13 @@ static int __init init_f2fs_fs(void)
 	err = init_inodecache();
 	if (err)
 		goto fail;
+	err = init_rangenode_cache();/* konna */
+    if (err){
+		goto free_inodecache;
+	}
 	err = f2fs_create_node_manager_caches();
 	if (err)
-		goto free_inodecache;
+		goto free_rangenodecache;
 	err = f2fs_create_segment_manager_caches();
 	if (err)
 		goto free_node_manager_caches;
@@ -4203,6 +4249,8 @@ free_segment_manager_caches:
 	f2fs_destroy_segment_manager_caches();
 free_node_manager_caches:
 	f2fs_destroy_node_manager_caches();
+free_rangenodecache://konna
+	destroy_rangenode_cache();
 free_inodecache:
 	destroy_inodecache();
 fail:
@@ -4225,6 +4273,9 @@ static void __exit exit_f2fs_fs(void)
 	f2fs_destroy_checkpoint_caches();
 	f2fs_destroy_segment_manager_caches();
 	f2fs_destroy_node_manager_caches();
+	/* konna */
+	destroy_rangenode_cache();
+	/* konna */
 	destroy_inodecache();
 	f2fs_destroy_trace_ios();
 }

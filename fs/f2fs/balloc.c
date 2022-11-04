@@ -33,6 +33,7 @@
 #include "segment.h"
 #include "balloc.h"
 
+// 分配一个freelist
 int f2fs_alloc_block_free_lists(struct f2fs_sb_info *sbi){
 	struct free_list *free_list;
 
@@ -53,39 +54,39 @@ int f2fs_alloc_block_free_lists(struct f2fs_sb_info *sbi){
 	return 0;
 }
 
+// 释放freelist
 void f2fs_delete_free_lists(struct f2fs_sb_info *sbi){
 
 	kfree(sbi->free_list);
 	sbi->free_list = NULL;
 }
 
-static void f2fs_init_free_list(struct super_block *sb, struct free_list *free_list, int index){
-	struct f2fs_sb_info *sbi = F2FS_SB(sb);
+// 初始化freelist的起始块地址和末地址，留出给sb，cp，sit，nat，saa的空间
+static void f2fs_init_free_list(struct f2fs_sb_info *sbi, struct free_list *free_list, int index){
+
+	struct f2fs_pm_info *pm_info = &sbi->pm_info;
 	unsigned long per_list_blocks;
 	struct f2fs_sm_info *sm_info = sbi->sm_info;
 	block_t main_blkaddr = sm_info->main_blkaddr;
 
-	per_list_blocks = sbi->pmem_size >> PAGE_SHIFT;
-
-	free_list->block_start = 0;
-	free_list->block_end = per_list_blocks -1;
-
+	per_list_blocks = pm_info->p_size >> PAGE_SHIFT;
 	free_list->block_start += main_blkaddr; // reserved for metadata
+	free_list->block_end = per_list_blocks -1;
 	sbi->curr_block = main_blkaddr;
 
-	f2fs_debug(sbi, KERN_INFO, "f2fs_init_free_list: main_blkaddr = %u", main_blkaddr);
+	f2fs_info(sbi, "f2fs_init_free_list: main_blkaddr = %u", main_blkaddr);
 }
 
-struct f2fs_range_node *f2fs_alloc_blocknode(struct super_block *sb){
-	return f2fs_alloc_range_node(sb);
+struct f2fs_range_node *f2fs_alloc_blocknode(){
+	return f2fs_alloc_range_node();
 }
 
 void f2fs_free_blocknode(struct f2fs_range_node *node){
 	f2fs_free_range_node(node);
 }
 
-void f2fs_init_blockmap(struct super_block *sb, int recovery){
-	struct f2fs_sb_info *sbi = F2FS_SB(sb);
+// 初始化freelist的空闲块信息和空闲块树
+int f2fs_init_blockmap(struct f2fs_sb_info *sbi, int recovery){
 	struct rb_root *tree;
 	struct f2fs_range_node *blknode;
 	struct free_list *free_list;
@@ -93,29 +94,33 @@ void f2fs_init_blockmap(struct super_block *sb, int recovery){
 
 	free_list = sbi->free_list;
 	tree = &(free_list->block_free_tree);
-	f2fs_init_free_list(sb, free_list, 0);
+	f2fs_init_free_list(sbi, free_list, 0);
 
 	/* */
-	if (recovery ==0){
-		free_list->num_free_blocks = free_list->block_end - free_list->block_start +1;
-		blknode = f2fs_alloc_blocknode(sb);
+	if (!recovery){
+		free_list->num_free_blocks = free_list->block_end - free_list->block_start +1;//空闲块数
+		blknode = f2fs_alloc_blocknode();
 
-		if(blknode == NULL)
-			BUG();
+		if(!blknode){
+			f2fs_err(sbi, "range node alloc failed!");
+			return -ENOMEM;
+		}
 
+		/* 最大的节点，包含所有空闲块 */
 		blknode->range_low = free_list->block_start;
 		blknode->range_high = free_list->block_end;
-		ret = f2fs_insert_blocktree(tree, blknode);
+		ret = f2fs_insert_blocktree(tree, blknode);//插入到freelist的红黑树中
 
 		if(ret){
 			f2fs_free_blocknode(blknode);
-			return;
+			f2fs_err(sbi, "range node insert failed!");
+			return -EINVAL;
 		}
 		free_list->first_node = blknode;
 		free_list->last_node = blknode;
 		free_list->num_blocknode =1;
 	}
-
+	return 0;
 }
 
 static inline int f2fs_rbtree_compare_rangenode(struct f2fs_range_node *curr,
@@ -305,7 +310,7 @@ int f2fs_new_blocks(struct super_block *sb, unsigned long *blocknr, unsigned int
 	unsigned long num_blocks = 0;
 	unsigned long new_blocknr = 0;
 	long ret_blocks = 0;
-	int retried = 0;
+	//int retried = 0;
 	//struct timespec alloc_time;
 
 	num_blocks = 1; //only needs 1 page for node
@@ -390,13 +395,13 @@ int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num){
 	int ret;
 
 	if(num <= 0){
-			f2fs_debug(sbi, KERN_ERR, "%s ERROR: free %d", __func__, num);
+			f2fs_err(sbi,  "%s ERROR: free %d", __func__, num);
 			return -EINVAL;
 	}
 
 	cpuid = 0;
 
-	curr = f2fs_alloc_blocknode(sb);
+	curr = f2fs_alloc_blocknode();
 	if(curr == NULL)
 		return -ENOMEM;
 
@@ -412,7 +417,7 @@ int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num){
 
 	if(block_low < free_list->block_start || block_high > free_list->block_end){
 //	if(blocknr < free_list->block_start || blocknr+num > free_list->block_end +1){
-		f2fs_debug(sbi, KERN_ERR, "free lbocks %lu to %lu, free list %d, start %lu, end %lu",
+		f2fs_err(sbi, "free lbocks %lu to %lu, free list %d, start %lu, end %lu",
 				block_low, block_high,
 				0, free_list->block_start, free_list->block_end);
 		ret = -EIO;
@@ -422,7 +427,7 @@ int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num){
 	ret = f2fs_find_free_slot(tree, block_low, block_high, &prev, &next);
 
 	if(ret){
-		f2fs_debug(sbi, KERN_ERR, "%s: find free slot fail: %d", __func__, ret);
+		f2fs_err(sbi, "%s: find free slot fail: %d", __func__, ret);
 		goto out;
 	}
 
