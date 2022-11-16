@@ -304,7 +304,7 @@ struct node_footer {
 	__le32 ino;		/* inode number */
 	__le32 flag;		/* include cold/fsync/dentry marks and offset */
 	__le64 cp_ver;		/* checkpoint version */
-	__le32 next_blkaddr;	/* next node page block address */
+	__le32 next_blkaddr;	/* next node page block address // 段内下一个页的地址*/
 } __packed;
 
 struct f2fs_node {
@@ -398,7 +398,7 @@ struct f2fs_summary {
 		__u8 reserved[3];
 		struct {
 			__u8 version;		/* node version number */
-			__le16 ofs_in_node;	/* block index in parent node */
+			__le16 ofs_in_node;	/* block index in parent node // 该sum对应的数据块在node内块索引*/
 		} __packed;
 	};
 } __packed;
@@ -414,10 +414,12 @@ struct summary_footer {
 
 #define SUM_JOURNAL_SIZE	(F2FS_BLKSIZE - SUM_FOOTER_SIZE -\
 				SUM_ENTRY_SIZE)
+//38
 #define NAT_JOURNAL_ENTRIES	((SUM_JOURNAL_SIZE - 2) /\
 				sizeof(struct nat_journal_entry))
 #define NAT_JOURNAL_RESERVED	((SUM_JOURNAL_SIZE - 2) %\
 				sizeof(struct nat_journal_entry))
+//6
 #define SIT_JOURNAL_ENTRIES	((SUM_JOURNAL_SIZE - 2) /\
 				sizeof(struct sit_journal_entry))
 #define SIT_JOURNAL_RESERVED	((SUM_JOURNAL_SIZE - 2) %\

@@ -147,11 +147,14 @@ enum {
  * SSR (Slack Space Recycle) reuses obsolete space without cleaning operations.
  * AT_SSR (Age Threshold based Slack Space Recycle) merges fragments into
  * fragmented segment which has similar aging degree.
+ * AT_SSR选择新段时，先根据sbi->atgc_management->age_threshold选择一批候选
+ * 再在其中选择与被回收段age相近的一批
+ * 再在其中选择有效块最多的一个，避免其被迁移
  */
 enum {
 	LFS = 0,
 	SSR,
-	AT_SSR,
+	AT_SSR,//垃圾回收时，新段的分配模式
 };
 
 /*
@@ -159,11 +162,14 @@ enum {
  * GC_CB is based on cost-benefit algorithm.
  * GC_GREEDY is based on greedy algorithm.
  * GC_AT is based on age-threshold algorithm.
+ * GC_AT在选择被回收段时，先根据sbi->atgc_management->age_threshold选择一批候选
+ * 再根据candidate_ratio选择age最老的一批
+ * 再在其中选择有效块最少的一个，减少迁移开销
  */
 enum {
 	GC_CB = 0,
 	GC_GREEDY,
-	GC_AT,
+	GC_AT,//垃圾回收时，目标段的选择模式
 	ALLOC_NEXT,
 	FLUSH_DEVICE,
 	MAX_GC_POLICY,
@@ -192,10 +198,10 @@ struct victim_sel_policy {
 	unsigned int offset;		/* last scanned bitmap offset */
 	unsigned int ofs_unit;		/* bitmap search unit */
 	unsigned int min_cost;		/* minimum cost */
-	unsigned long long oldest_age;	/* oldest age of segments having the same min cost */
+	unsigned long long oldest_age;	/* oldest age of segments having the same min cost // 用于AT*/
 	unsigned int min_segno;		/* segment # having min. cost */
-	unsigned long long age;		/* mtime of GCed section*/
-	unsigned long long age_threshold;/* age threshold */
+	unsigned long long age;		/* mtime of GCed section // 用于AT*/
+	unsigned long long age_threshold;/* age threshold // 用于AT*/
 };
 
 struct seg_entry {
@@ -264,16 +270,16 @@ struct sit_info {
 	unsigned long long dirty_min_mtime;	/* rerange candidates in GC_AT */
 	unsigned long long dirty_max_mtime;	/* rerange candidates in GC_AT */
 
-	unsigned int last_victim[MAX_GC_POLICY]; /* last victim segment # */
+	unsigned int last_victim[MAX_GC_POLICY]; /* last victim segment # // 上一个被GC的段号 */
 };
 
 struct free_segmap_info {
-	unsigned int start_segno;	/* start segment number logically */
-	unsigned int free_segments;	/* # of free segments */
-	unsigned int free_sections;	/* # of free sections */
+	unsigned int start_segno;	/* start segment number logically // main area的首段相对于segment0的段号*/
+	unsigned int free_segments;	/* # of free segments // main area的空闲段数*/
+	unsigned int free_sections;	/* # of free sections // main area的空闲sec数*/
 	spinlock_t segmap_lock;		/* free segmap lock */
-	unsigned long *free_segmap;	/* free segment bitmap */
-	unsigned long *free_secmap;	/* free section bitmap */
+	unsigned long *free_segmap;	/* free segment bitmap // main area的空闲位图，0是空闲*/
+	unsigned long *free_secmap;	/* free section bitmap // main area的空闲sec位图，0是空闲*/
 };
 
 /* Notice: The order of dirty type is same with CURSEG_XXX in f2fs.h */
@@ -285,17 +291,18 @@ enum dirty_type {
 	DIRTY_WARM_NODE,	/* dirty segments assigned as warm node logs */
 	DIRTY_COLD_NODE,	/* dirty segments assigned as cold node logs */
 	DIRTY,			/* to count # of dirty segments */
-	PRE,			/* to count # of entirely obsolete segments */
+	PRE,			/* to count # of entirely obsolete segments // 所有块都无效 */
 	NR_DIRTY_TYPE
 };
 
+//保存各种类型的脏段位图，数量，和victim选择方法，即get_victim_by_default
 struct dirty_seglist_info {
 	const struct victim_selection *v_ops;	/* victim selction operation */
 	unsigned long *dirty_segmap[NR_DIRTY_TYPE];
-	unsigned long *dirty_secmap;
+	unsigned long *dirty_secmap;	// 在一个section内有多个段时才会使用
 	struct mutex seglist_lock;		/* lock for segment bitmaps */
-	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
-	unsigned long *victim_secmap;		/* background GC victims */
+	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments //各种脏段类型数量*/
+	unsigned long *victim_secmap;		/* background GC victims// 后台GC选择过的受害者sec位图 */
 };
 
 /* victim selection function for cleaning and SSR */
@@ -347,6 +354,7 @@ static inline struct sec_entry *get_sec_entry(struct f2fs_sb_info *sbi,
 	return &sit_i->sec_entries[GET_SEC_FROM_SEG(sbi, segno)];
 }
 
+// 返回segno段或段所在section的有效块数
 static inline unsigned int get_valid_blocks(struct f2fs_sb_info *sbi,
 				unsigned int segno, bool use_section)
 {
@@ -360,6 +368,7 @@ static inline unsigned int get_valid_blocks(struct f2fs_sb_info *sbi,
 		return get_seg_entry(sbi, segno)->valid_blocks;
 }
 
+// 判断段内块是否cpkt过
 static inline unsigned int get_ckpt_valid_blocks(struct f2fs_sb_info *sbi,
 				unsigned int segno)
 {
@@ -449,6 +458,7 @@ static inline void __set_free(struct f2fs_sb_info *sbi, unsigned int segno)
 	spin_unlock(&free_i->segmap_lock);
 }
 
+// 设置段已被使用，段空闲位图和sec空闲位图置一，数量各减一
 static inline void __set_inuse(struct f2fs_sb_info *sbi,
 		unsigned int segno)
 {
@@ -806,6 +816,7 @@ static inline unsigned long long get_mtime(struct f2fs_sb_info *sbi,
 	return sit_i->elapsed_time;
 }
 
+// 给sum的nid，ofs_in_node，version赋值
 static inline void set_summary(struct f2fs_summary *sum, nid_t nid,
 			unsigned int ofs_in_node, unsigned char version)
 {
@@ -820,6 +831,7 @@ static inline block_t start_sum_block(struct f2fs_sb_info *sbi)
 		le32_to_cpu(F2FS_CKPT(sbi)->cp_pack_start_sum);
 }
 
+// 返回cp区域某类型的sum blk地址
 static inline block_t sum_blk_addr(struct f2fs_sb_info *sbi, int base, int type)
 {
 	return __start_cp_addr(sbi) +
@@ -827,6 +839,7 @@ static inline block_t sum_blk_addr(struct f2fs_sb_info *sbi, int base, int type)
 				- (base + 1) + type;
 }
 
+// 判断section是否正在被使用，或是正在被GC
 static inline bool sec_usage_check(struct f2fs_sb_info *sbi, unsigned int secno)
 {
 	if (IS_CURSEC(sbi, secno) || (sbi->cur_victim_sec == secno))

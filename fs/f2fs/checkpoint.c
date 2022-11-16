@@ -1164,6 +1164,7 @@ static bool __need_flush_quota(struct f2fs_sb_info *sbi)
 
 /*
  * Freeze all the FS-operations for checkpoint.
+ * 会下刷一些数据：inline_data pages,quotas,dirty dentry pages,dirty nodes pages
  */
 static int block_operations(struct f2fs_sb_info *sbi)
 {
@@ -1401,7 +1402,7 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	int err;
 
 	/* Flush all the NAT/SIT pages */
-	f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);
+	f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);// 下刷所有脏的nat，sit块
 
 	/* start to update checkpoint, cp ver is already updated previously */
 	ckpt->elapsed_time = cpu_to_le64(get_mtime(sbi, true));
@@ -1460,7 +1461,7 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	start_blk = __start_cp_next_addr(sbi);
 
 	/* write nat bits */
-	if (enabled_nat_bits(sbi, cpc)) {
+	if (enabled_nat_bits(sbi, cpc)) {//仅在umount时写nat bits
 		__u64 cp_ver = cur_cp_version(ckpt);
 		block_t blk;
 

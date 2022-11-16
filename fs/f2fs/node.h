@@ -45,6 +45,7 @@ enum {
 	HAS_LAST_FSYNC,		/* has the latest node fsync mark? */
 	IS_DIRTY,		/* this nat entry is dirty? */
 	IS_PREALLOC,		/* nat entry is preallocated */
+	ON_NVM,			/* konna node页在NVM上*/
 };
 
 /*
@@ -57,6 +58,21 @@ struct node_info {
 	unsigned char version;	/* version of the node */
 	unsigned char flag;	/* for node information bits */
 };
+
+/* konna: for node info on nvm*/
+
+#define NAT_NVM_SHIFT 4	
+#define NAT_NVM_SIZE ( 1<<NAT_NVM_SHIFT ) //NVM上的node_info size
+#define NAT_INFO_SIZE (NAT_NVM_SIZE-2)		//内存中的node_info size
+#define NAT_NVM_OFFSET_SHIFT (PAGE_SHIFT-NAT_NVM_SHIFT)
+#define NAT_ENTRY_PER_NVM_BLK ( 1UL<<NAT_NVM_OFFSET_SHIFT )
+#define NAT_NVM_OFFSET_MASK (NAT_ENTRY_PER_NVM_BLK - 1)
+#define NAT_NVM_BLK_OFFSET(start_nid) ((start_nid) >> NAT_NVM_OFFSET_SHIFT)
+
+struct nvm_node_info{
+	struct node_info ni;
+};
+/* konna */
 
 struct nat_entry {
 	struct list_head list;	/* for clean or dirty nat list */
@@ -82,6 +98,7 @@ static inline void copy_node_info(struct node_info *dst,
 	dst->blk_addr = src->blk_addr;
 	dst->version = src->version;
 	/* should not copy flag here */
+	//dst->flag |= (src->flag & (0x01 << ON_NVM));
 }
 
 static inline void set_nat_flag(struct nat_entry *ne,
@@ -193,6 +210,7 @@ static inline void get_nat_bitmap(struct f2fs_sb_info *sbi, void *addr)
 	memcpy(addr, nm_i->nat_bitmap, nm_i->bitmap_size);
 }
 
+// 根据nm_i->nat_bitmap判断nat block在对应的第一个段还是第二个段
 static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
@@ -216,6 +234,7 @@ static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 	return block_addr;
 }
 
+// 利用异或操作，找到nat对应的下一个该写的块
 static inline pgoff_t next_nat_addr(struct f2fs_sb_info *sbi,
 						pgoff_t block_addr)
 {
@@ -248,6 +267,7 @@ static inline nid_t nid_of_node(struct page *node_page)
 	return le32_to_cpu(rn->footer.nid);
 }
 
+// 从node page的footer的flag中获得offset
 static inline unsigned int ofs_of_node(struct page *node_page)
 {
 	struct f2fs_node *rn = F2FS_NODE(node_page);
@@ -293,6 +313,7 @@ static inline void copy_node_footer(struct page *dst, struct page *src)
 	memcpy(&dst_rn->footer, &src_rn->footer, sizeof(struct node_footer));
 }
 
+// 更新node页的footer的cp_var和next_blkaddr
 static inline void fill_node_footer_blkaddr(struct page *page, block_t blkaddr)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(F2FS_P_SB(page));
@@ -360,6 +381,7 @@ static inline bool IS_DNODE(struct page *node_page)
 	return true;
 }
 
+// 修改indoe或indirect_node的off位置的nid号
 static inline int set_nid(struct page *p, int off, nid_t nid, bool i)
 {
 	struct f2fs_node *rn = F2FS_NODE(p);

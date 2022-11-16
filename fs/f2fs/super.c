@@ -1262,6 +1262,7 @@ static void f2fs_put_super(struct super_block *sb)
 		struct cp_control cpc = {
 			.reason = CP_UMOUNT,
 		};
+		//f2fs_info(sbi, "put_super first write checkpoint");
 		f2fs_write_checkpoint(sbi, &cpc);
 	}
 
@@ -1273,6 +1274,7 @@ static void f2fs_put_super(struct super_block *sb)
 		struct cp_control cpc = {
 			.reason = CP_UMOUNT | CP_TRIMMED,
 		};
+		//f2fs_info(sbi, "put_super second write checkpoint");
 		f2fs_write_checkpoint(sbi, &cpc);
 	}
 
@@ -1333,6 +1335,7 @@ static void f2fs_put_super(struct super_block *sb)
 	utf8_unload(sb->s_encoding);
 #endif
 	if(test_opt(sbi, PMEM)){//konna
+		f2fs_destroy_range_nodes(sbi);
 		f2fs_delete_free_lists(sbi);
 		f2fs_put_pm_info(sbi);
 	}	
@@ -1373,6 +1376,7 @@ int f2fs_sync_fs(struct super_block *sb, int sync)
 		cpc.reason = __get_cp_reason(sbi);
 
 		down_write(&sbi->gc_lock);
+		f2fs_info(sbi, "sync_fs write checkpoint");
 		err = f2fs_write_checkpoint(sbi, &cpc);
 		up_write(&sbi->gc_lock);
 	}
@@ -1734,7 +1738,7 @@ static void default_options(struct f2fs_sb_info *sbi)
 	set_opt(sbi, FLUSH_MERGE);
 	set_opt(sbi, DISCARD);
 	if (f2fs_sb_has_blkzoned(sbi))
-		F2FS_OPTION(sbi).fs_mode = FS_MODE_LFS;
+		F2FS_OPTION(sbi).fs_mode = FS_MODE_LFS;//konna zbd只能用LFS模式
 	else
 		F2FS_OPTION(sbi).fs_mode = FS_MODE_ADAPTIVE;
 
@@ -1794,6 +1798,7 @@ static int f2fs_disable_checkpoint(struct f2fs_sb_info *sbi)
 	down_write(&sbi->gc_lock);
 	cpc.reason = CP_PAUSE;
 	set_sbi_flag(sbi, SBI_CP_DISABLED);
+	//f2fs_info(sbi, "disable_checkpoint write checkpoint");
 	err = f2fs_write_checkpoint(sbi, &cpc);
 	if (err)
 		goto out_unlock;
@@ -1818,6 +1823,7 @@ static void f2fs_enable_checkpoint(struct f2fs_sb_info *sbi)
 	set_sbi_flag(sbi, SBI_IS_DIRTY);
 	up_write(&sbi->gc_lock);
 
+	f2fs_info(sbi, "f2fs_enable_checkpoint f2fs sync fs");
 	f2fs_sync_fs(sbi->sb, 1);
 }
 
@@ -1956,6 +1962,7 @@ static int f2fs_remount(struct super_block *sb, int *flags, char *data)
 
 		set_sbi_flag(sbi, SBI_IS_DIRTY);
 		set_sbi_flag(sbi, SBI_IS_CLOSE);
+		f2fs_info(sbi, "f2fs_remount f2fs sync fs");
 		f2fs_sync_fs(sb, 1);
 		clear_sbi_flag(sbi, SBI_IS_CLOSE);
 	}
@@ -3126,6 +3133,7 @@ static void init_sb_info(struct f2fs_sb_info *sbi)
 	sbi->total_node_count =
 		(le32_to_cpu(raw_super->segment_count_nat) / 2)
 			* sbi->blocks_per_seg * NAT_ENTRY_PER_BLOCK;
+	f2fs_info(sbi, "total sections = %d ",sbi->total_sections);
 	f2fs_info(sbi, "segs per sec = %d ",sbi->segs_per_sec);
     f2fs_info(sbi, "secs per zone = %d ",sbi->secs_per_zone);
 	sbi->root_ino_num = le32_to_cpu(raw_super->root_ino);
@@ -3568,6 +3576,38 @@ no_bdev:
 
 }
 
+// konnatest
+// static void test(struct f2fs_sb_info *sbi, block_t blkaddr){
+// 	struct seg_entry *se;
+// 	unsigned int segno, offset;
+// 	bool exist;
+
+// 	segno = GET_SEGNO(sbi, blkaddr);
+// 	offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
+// 	se = get_seg_entry(sbi, segno);
+// 	exist = f2fs_test_bit(offset, se->cur_valid_map);
+// 	if(!exist){
+// 		f2fs_err(sbi, "after build sm, error blkaddr:%u, sit bitmap:%d",
+// 			 blkaddr, exist);
+// 	}
+// 	f2fs_err(sbi, "after build sm, not error blkaddr:%u, sit bitmap:%d",
+// 			 blkaddr, exist);
+// 	return;
+// }
+
+//konna
+static void f2fs_init_pm_info_meta_va(struct f2fs_sb_info *sbi){
+	struct f2fs_super_block *raw_super = F2FS_RAW_SUPER(sbi);
+	struct f2fs_pm_info *pm_info = PM_I(sbi);
+	void *va_start = pm_info->p_va_start;
+
+	pm_info->p_cp_va_start = va_start + ((unsigned long long)(le32_to_cpu(raw_super->cp_blkaddr))<<F2FS_BLKSIZE_BITS);
+	pm_info->p_sit_va_start = va_start + ((unsigned long long)(le32_to_cpu(raw_super->sit_blkaddr))<<F2FS_BLKSIZE_BITS);
+	pm_info->p_nat_va_start = va_start + ((unsigned long long)(le32_to_cpu(raw_super->nat_blkaddr))<<F2FS_BLKSIZE_BITS);
+	pm_info->p_ssa_va_start = va_start + ((unsigned long long)(le32_to_cpu(raw_super->ssa_blkaddr))<<F2FS_BLKSIZE_BITS);
+
+}
+
 static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct f2fs_sb_info *sbi;
@@ -3654,6 +3694,7 @@ try_onemore:
 			f2fs_err(sbi, "Failed to allocate block free lists");
 			goto free_pm_dev;
 		}
+		f2fs_init_pm_info_meta_va(sbi);
 	}
 	/* konna */
 	
@@ -3824,6 +3865,7 @@ try_onemore:
 			 err);
 		goto free_sm;
 	}
+
 	err = f2fs_build_node_manager(sbi);
 	if (err) {
 		f2fs_err(sbi, "Failed to initialize F2FS node manager (%d)",
@@ -3856,7 +3898,7 @@ try_onemore:
 
 	err = f2fs_build_stats(sbi);
 	if (err)
-		goto free_nm;
+		goto free_range_nodes;// konna
 
 	/* get an inode for node space */
 	sbi->node_inode = f2fs_iget(sb, F2FS_NODE_INO(sbi));
@@ -4033,6 +4075,10 @@ free_node_inode:
 	sbi->node_inode = NULL;
 free_stats:
 	f2fs_destroy_stats(sbi);
+free_range_nodes:// konna
+	if(test_opt(sbi,PMEM)){
+		f2fs_destroy_range_nodes(sbi);
+	}
 free_nm:
 	f2fs_destroy_node_manager(sbi);
 free_sm:
@@ -4111,6 +4157,7 @@ static void kill_f2fs_super(struct super_block *sb)
 			struct cp_control cpc = {
 				.reason = CP_UMOUNT,
 			};
+			f2fs_info(sbi, "kill_f2fs_super write checkpoint");
 			f2fs_write_checkpoint(sbi, &cpc);
 		}
 

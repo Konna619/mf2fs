@@ -596,8 +596,8 @@ retry_dn:
 	for (; start < end; start++, dn.ofs_in_node++) {
 		block_t src, dest;
 
-		src = f2fs_data_blkaddr(&dn);
-		dest = data_blkaddr(dn.inode, page, dn.ofs_in_node);
+		src = f2fs_data_blkaddr(&dn);// cp时，文件LBA对应的物理块地址
+		dest = data_blkaddr(dn.inode, page, dn.ofs_in_node);// cp到崩溃之间，文件LBA对应的物理块地址
 
 		if (__is_valid_data_blkaddr(src) &&
 			!f2fs_is_valid_blkaddr(sbi, src, META_POR)) {
@@ -624,7 +624,7 @@ retry_dn:
 		if (!file_keep_isize(inode) &&
 			(i_size_read(inode) <= ((loff_t)start << PAGE_SHIFT)))
 			f2fs_i_size_write(inode,
-				(loff_t)(start + 1) << PAGE_SHIFT);
+				(loff_t)(start + 1) << PAGE_SHIFT);// 修改文件size
 
 		/*
 		 * dest is reserved block, invalidate src block
@@ -852,6 +852,7 @@ skip:
 			struct cp_control cpc = {
 				.reason = CP_RECOVERY,
 			};
+			//f2fs_info(sbi, "recover_fsync_data write checkpoint");
 			err = f2fs_write_checkpoint(sbi, &cpc);
 		}
 	}

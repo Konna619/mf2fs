@@ -939,6 +939,7 @@ alloc_new:
 	return 0;
 }
 
+// 真正写页
 void f2fs_submit_page_write(struct f2fs_io_info *fio)
 {
 	struct f2fs_sb_info *sbi = fio->sbi;
@@ -957,7 +958,7 @@ next:
 			goto out;
 		}
 		fio = list_first_entry(&io->io_list,
-						struct f2fs_io_info, list);
+						struct f2fs_io_info, list);// 提交write_io链表中的所有fio，一个f2fs_io_info对应一个页，一个f2fs_bio_info对应一个bio
 		list_del(&fio->list);
 		spin_unlock(&io->io_lock);
 	}
@@ -991,14 +992,14 @@ alloc_new:
 			fio->retry = true;
 			goto skip;
 		}
-		io->bio = __bio_alloc(fio, BIO_MAX_PAGES);
+		io->bio = __bio_alloc(fio, BIO_MAX_PAGES);// 分配有256页的bio
 		f2fs_set_bio_crypt_ctx(io->bio, fio->page->mapping->host,
 				       bio_page->index, fio, GFP_NOIO);
 		io->fio = *fio;
 	}
 
-	if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {
-		__submit_merged_bio(io);
+	if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {// 把page加到bio中
+		__submit_merged_bio(io);// bio满了，先提交，再分配
 		goto alloc_new;
 	}
 
@@ -1097,6 +1098,7 @@ static int f2fs_submit_page_read(struct inode *inode, struct page *page,
 	return 0;
 }
 
+// 更新direct node中dn->ofs_in_node对应的blkaddr
 static void __set_data_blkaddr(struct dnode_of_data *dn)
 {
 	struct f2fs_node *rn = F2FS_NODE(dn->node_page);
@@ -1116,13 +1118,14 @@ static void __set_data_blkaddr(struct dnode_of_data *dn)
  * ->data_page
  *  ->node_page
  *    update block addresses in the node page
+ * 更新direct node中dn->ofs_in_node对应的blkaddr
  */
 void f2fs_set_data_blkaddr(struct dnode_of_data *dn)
 {
 	f2fs_wait_on_page_writeback(dn->node_page, NODE, true, true);
 	__set_data_blkaddr(dn);
 	if (set_page_dirty(dn->node_page))
-		dn->node_changed = true;
+		dn->node_changed = true;// 之前不dirty，node_changed设为true
 }
 
 void f2fs_update_data_blkaddr(struct dnode_of_data *dn, block_t blkaddr)
@@ -2454,8 +2457,12 @@ static int f2fs_read_data_page(struct file *file, struct page *page)
 	}
 
 	/* If the file has inline data, try to read it directly */
-	if (f2fs_has_inline_data(inode))
+	if (f2fs_has_inline_data(inode)){
+		printk("file inode:%lu has inline data", inode->i_ino);
 		ret = f2fs_read_inline_data(inode, page);
+	}else{
+		printk("file inode:%lu has no inline data", inode->i_ino);
+	}
 	if (ret == -EAGAIN)
 		ret = f2fs_mpage_readpages(inode, NULL, page);
 	return ret;

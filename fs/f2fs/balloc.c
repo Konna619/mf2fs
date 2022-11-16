@@ -85,6 +85,25 @@ void f2fs_free_blocknode(struct f2fs_range_node *node){
 	f2fs_free_range_node(node);
 }
 
+// 删除free_list中所有的f2fs_range_node结构体
+void f2fs_destroy_range_nodes(struct f2fs_sb_info *sbi){
+	struct free_list *free_list = sbi->free_list;
+	struct f2fs_range_node *curr = free_list->first_node;
+	struct rb_node *curr_rb;
+	struct f2fs_range_node *tmp;
+	if(!curr)
+		return;
+	curr_rb = &(curr->node);
+	while(curr_rb){
+		curr = container_of(curr_rb, struct f2fs_range_node, node);
+		tmp = curr;
+		curr_rb = rb_next(curr_rb);
+		f2fs_free_blocknode(tmp);
+	}
+
+	return;
+}
+
 // 初始化freelist的空闲块信息和空闲块树
 int f2fs_init_blockmap(struct f2fs_sb_info *sbi, int recovery){
 	struct rb_root *tree;

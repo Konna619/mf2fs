@@ -175,6 +175,8 @@ int nova_find_free_slot(struct rb_root *tree, unsigned long range_low,
 	unsigned long range_high, struct f2fs_range_node **prev,
 	struct f2fs_range_node **next);
 
+void f2fs_destroy_range_nodes(struct f2fs_sb_info *sbi);
+
 extern int f2fs_insert_range_node(struct rb_root *tree,
 	struct f2fs_range_node *new_node, enum node_type type);
 
