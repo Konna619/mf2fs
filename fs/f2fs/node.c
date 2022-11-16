@@ -184,6 +184,26 @@ static struct nat_entry *__init_nat_entry(struct f2fs_nm_info *nm_i,
 	return ne;
 }
 
+//konna
+static struct nat_entry *__init_nat_entry_on_pm(struct f2fs_nm_info *nm_i,
+	struct nat_entry *ne, struct node_info *raw_ni, bool no_fail)
+{
+	if (no_fail)
+		f2fs_radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne);
+	else if (radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne))
+		return NULL;
+
+	if (raw_ni)
+		copy_node_info_from_pm(&ne->ni, raw_ni);
+
+	spin_lock(&nm_i->nat_list_lock);
+	list_add_tail(&ne->list, &nm_i->nat_entries);
+	spin_unlock(&nm_i->nat_list_lock);
+
+	nm_i->nat_cnt++;
+	return ne;
+}
+
 // 到f2fs_nm_info缓存的nat entry radix tree中找有没有缓存，如果有且是clean就添加到nat_entries lru的尾部
 static struct nat_entry *__lookup_nat_cache(struct f2fs_nm_info *nm_i, nid_t n)
 {
@@ -428,6 +448,31 @@ static void cache_nat_entry(struct f2fs_sb_info *sbi, nid_t nid,
 		__free_nat_entry(new);
 }
 
+//konna
+static void cache_nat_entry_on_pm(struct f2fs_sb_info *sbi, nid_t nid,
+						struct node_info *ni)
+{
+	struct f2fs_nm_info *nm_i = NM_I(sbi);
+	struct nat_entry *new, *e;
+
+	new = __alloc_nat_entry(nid, false);// 在内存中分配一个nat_entry
+	if (!new)
+		return;
+
+	down_write(&nm_i->nat_tree_lock);
+	e = __lookup_nat_cache(nm_i, nid);// 看缓存中有没有
+	if (!e)
+		e = __init_nat_entry_on_pm(nm_i, new, ni, false); // 没有则初始化，并加入到clean nat entry链表中
+	else
+		f2fs_bug_on(sbi, nat_get_ino(e) != ni->ino ||
+				nat_get_blkaddr(e) !=
+					ni->blk_addr ||
+				nat_get_version(e) != ni->version); // 有的话，看看属性都对不对
+	up_write(&nm_i->nat_tree_lock);
+	if (e != new)
+		__free_nat_entry(new);
+}
+
 static void set_node_addr(struct f2fs_sb_info *sbi, struct node_info *ni,
 			block_t new_blkaddr, bool fsync_done)
 {
@@ -529,7 +574,7 @@ static int f2fs_read_nat_from_pm(struct f2fs_sb_info *sbi, struct node_info *ni,
 	void *vaddr = pm_i->p_nat_va_start + ((unsigned long long)nid << NAT_NVM_SHIFT );
 	// __copy_to_user_inatomic(&ne, vaddr, NAT_NVM_SIZE);
 	struct node_info *nip = (struct node_info *)vaddr;
-	f2fs_info(sbi,"read nid %u from addr %llx",nid,(unsigned long long)vaddr);
+	// f2fs_info(sbi,"read nid %u from addr %llx",nid,(unsigned long long)vaddr);
 	// f2fs_info(sbi,"nat entry size:%u",sizeof(struct nat_entry));
 	// f2fs_info(sbi,"node info size:%u",sizeof(struct node_info));
 	// f2fs_info(sbi,"nvm node info size:%u",sizeof(struct nvm_node_info));
@@ -565,7 +610,7 @@ int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 		ni->ino = nat_get_ino(e);
 		ni->blk_addr = nat_get_blkaddr(e);
 		ni->version = nat_get_version(e);
-		f2fs_info(sbi, "cache read nat nid: %u addr: %u", nid, ni->blk_addr);
+		//f2fs_info(sbi, "cache read nat nid: %u addr: %u", nid, ni->blk_addr);
 		up_read(&nm_i->nat_tree_lock);
 		return 0;
 	}
@@ -581,16 +626,16 @@ int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 	}
 	up_read(&curseg->journal_rwsem);
 	if (i >= 0) {
-		f2fs_info(sbi, "journal read nat nid: %u addr: %u", nid, ni->blk_addr);
+		//f2fs_info(sbi, "journal read nat nid: %u addr: %u", nid, ni->blk_addr);
 		up_read(&nm_i->nat_tree_lock);
 		goto cache;// 如果找到了，缓存该nat entry
 	}
 
 	if( test_opt(sbi, PMEM)){
 		if( f2fs_read_nat_from_pm(sbi, ni, nid) == 0 ){
-			f2fs_info(sbi, "pm read nat nid: %u addr: %u", nid, ni->blk_addr);
+			//f2fs_info(sbi, "pm read nat nid: %u addr: %u", nid, ni->blk_addr);
 			up_read(&nm_i->nat_tree_lock);
-			goto cache;
+			goto cache_pm;
 		}
 	}
 
@@ -606,9 +651,9 @@ int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 	ne = nat_blk->entries[nid - start_nid];//在block中找到nat_entry
 	node_info_from_raw_nat(ni, &ne);
 	f2fs_put_page(page, 1);
-	if( test_opt(sbi, PMEM) ){
-		f2fs_info(sbi, "ssd read nat nid: %u addr: %u", nid, ni->blk_addr);
-	}
+	// if( test_opt(sbi, PMEM) ){
+	// 	f2fs_info(sbi, "ssd read nat nid: %u addr: %u", nid, ni->blk_addr);
+	// }
 cache:
 	blkaddr = le32_to_cpu(ne.block_addr);
 	if (__is_valid_data_blkaddr(blkaddr) &&
@@ -617,6 +662,15 @@ cache:
 
 	/* cache nat entry */
 	cache_nat_entry(sbi, nid, &ne);	// 加入clean 缓存
+	return 0;
+cache_pm:
+	blkaddr = le32_to_cpu(ne.block_addr);
+	if (__is_valid_data_blkaddr(blkaddr) &&
+		!f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC_ENHANCE))//blkaddr应当是空闲的？
+		return -EFAULT;
+
+	/* cache nat entry */
+	cache_nat_entry_on_pm(sbi, nid, ni);	// 从pm加入clean 缓存
 	return 0;
 }
 
@@ -1629,7 +1683,7 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 
 	fio.old_blkaddr = ni.blk_addr;
 	f2fs_do_write_node_page(nid, &fio);// 写node page到新页中
-	f2fs_info(sbi, "write node nid:%u to blkaddr:%u",nid,fio.new_blkaddr);
+	//f2fs_info(sbi, "write node nid:%u to blkaddr:%u",nid,fio.new_blkaddr);
 	set_node_addr(sbi, &ni, fio.new_blkaddr, is_fsync_dnode(page));// 修改nat entry
 	dec_page_count(sbi, F2FS_DIRTY_NODES);
 	up_read(&sbi->node_write);
@@ -2947,11 +3001,11 @@ static void f2fs_write_nat_to_pm(struct f2fs_sb_info *sbi, struct node_info *ni,
 
 	void *vaddr = PM_I(sbi)->p_nat_va_start + ((unsigned long long)nid<<NAT_NVM_SHIFT);
 
-	f2fs_info(sbi,"wirte nid %u to addr %llx",nid,(unsigned long long)vaddr);
+	//f2fs_info(sbi,"wirte nid %u to addr %llx",nid,(unsigned long long)vaddr);
 	if(__copy_from_user_inatomic(vaddr, (void *)ni, NAT_NVM_SIZE)){
 		f2fs_err(sbi, "write nat on nvm failed! nid:%u", ni->nid);
 	}
-	f2fs_info(sbi,"after write blk_addr on pm :%u", ni->blk_addr);
+	//f2fs_info(sbi,"after write blk_addr on pm :%u", ni->blk_addr);
 
 }
 
@@ -3023,15 +3077,15 @@ start_flush:
 			f2fs_bug_on(sbi, offset < 0);
 			raw_ne = &nat_in_journal(journal, offset);
 			nid_in_journal(journal, offset) = cpu_to_le32(nid);
-			f2fs_info(sbi, "write to journal nid:%u , addr:%u", nid, ne->ni.blk_addr);
+			//f2fs_info(sbi, "write to journal nid:%u , addr:%u", nid, ne->ni.blk_addr);
 		} else if (to_pm){
 			// nat_addr_on_pm = nat_startaddr_on_pm + ((unsigned long long)nid << NAT_NVM_SHIFT);
 			f2fs_write_nat_to_pm(sbi, &ne->ni, nid);
-			 f2fs_info(sbi, "write to pm node table nid:%u , addr:%u", nid, ne->ni.blk_addr);
+			//f2fs_info(sbi, "write to pm node table nid:%u , addr:%u", nid, ne->ni.blk_addr);
 			goto skip_copy;
 		} else {	// 不写journal，到nat页中找到raw_ne的地址
 			raw_ne = &nat_blk->entries[nid - start_nid];
-			f2fs_info(sbi, "write to ssd node table nid:%u , addr:%u", nid, ne->ni.blk_addr);
+			//f2fs_info(sbi, "write to ssd node table nid:%u , addr:%u", nid, ne->ni.blk_addr);
 		}
 
 		raw_nat_from_node_info(raw_ne, &ne->ni);	//写到raw_ne中

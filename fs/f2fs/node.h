@@ -101,6 +101,15 @@ static inline void copy_node_info(struct node_info *dst,
 	//dst->flag |= (src->flag & (0x01 << ON_NVM));
 }
 
+//konna
+static inline void copy_node_info_from_pm(struct node_info *dst,
+						struct node_info *src)
+{
+	dst->ino = src->ino;
+	dst->blk_addr = src->blk_addr;
+	dst->version = src->version;
+}
+
 static inline void set_nat_flag(struct nat_entry *ne,
 				unsigned int type, bool set)
 {

@@ -1376,7 +1376,7 @@ int f2fs_sync_fs(struct super_block *sb, int sync)
 		cpc.reason = __get_cp_reason(sbi);
 
 		down_write(&sbi->gc_lock);
-		f2fs_info(sbi, "sync_fs write checkpoint");
+		//f2fs_info(sbi, "sync_fs write checkpoint");
 		err = f2fs_write_checkpoint(sbi, &cpc);
 		up_write(&sbi->gc_lock);
 	}
