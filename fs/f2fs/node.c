@@ -2933,7 +2933,7 @@ static void __update_nat_bits_based_on_pm(struct f2fs_sb_info *sbi, nid_t start_
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	struct f2fs_pm_info *pm_i = PM_I(sbi);
 	unsigned int nat_index = start_nid / NAT_ENTRY_PER_BLOCK;
-	struct nat_entry *ne = pm_i->p_nat_va_start + ((unsigned long long)start_nid<<NAT_NVM_SHIFT);
+	struct node_info *ni = pm_i->p_nat_va_start + ((unsigned long long)start_nid<<NAT_NVM_SHIFT);
 	int valid = 0;
 	int i = 0;
 
@@ -2945,7 +2945,7 @@ static void __update_nat_bits_based_on_pm(struct f2fs_sb_info *sbi, nid_t start_
 		i = 1;
 	}
 	for (; i < NAT_ENTRY_PER_BLOCK; i++) {//计算valid nid数量
-		if (ne[i].ni.blk_addr != NULL_ADDR)
+		if (ni[i].blk_addr != NULL_ADDR)
 			valid++;
 	}
 	if (valid == 0) {// 如果valid nid为0
