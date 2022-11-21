@@ -15,6 +15,7 @@
 #include <linux/timer.h>
 #include <linux/freezer.h>
 #include <linux/sched/signal.h>
+#include <linux/libnvdimm.h>	//konna
 
 #include "f2fs.h"
 #include "segment.h"
@@ -1900,16 +1901,27 @@ static bool add_discard_addrs(struct f2fs_sb_info *sbi, struct cp_control *cpc,
 	int i;
 
 	if (se->valid_blocks == max_blocks || !f2fs_hw_support_discard(sbi))
-		return false;
+		return false;// 段内的块都是有效的或不支持discard
 
 	if (!force) {
 		if (!f2fs_realtime_discard_enable(sbi) || !se->valid_blocks ||
 			SM_I(sbi)->dcc_info->nr_discards >=
 				SM_I(sbi)->dcc_info->max_discards)
-			return false;
+			return false;// 不支持实时discard或有效块为零或discard数量超过限制
 	}
 
 	/* SIT_VBLOCK_MAP_SIZE should be multiple of sizeof(unsigned long) */
+	// force	ckpt_map	discard_map		dmap
+	//   1			0			0			 1
+	// 				0			1			 1
+	// 				1			0			 1
+	//				1			1			 0
+	//	
+	// force	cur_map		ckpt_map		dmap
+	//	 0			0			0			 0
+	//	 			0			1			 1
+	//				1			0			 0
+	//				1			1			 0
 	for (i = 0; i < entries; i++)
 		dmap[i] = force ? ~ckpt_map[i] & ~discard_map[i] :
 				(cur_map[i] ^ ckpt_map[i]) & ckpt_map[i];
@@ -1961,6 +1973,9 @@ void f2fs_release_discard_addrs(struct f2fs_sb_info *sbi)
 
 /*
  * Should call f2fs_clear_prefree_segments after checkpoint is done.
+ * 将dirty_seglist_info中所有的PRE段加到free_segmap_info中
+ * 但不会删除dirty_seglist_info的PRE段
+ * checkpoint完成后，应调用f2fs_clear_prefree_segments来删除
  */
 static void set_prefree_as_free_segments(struct f2fs_sb_info *sbi)
 {
@@ -4007,6 +4022,7 @@ static struct page *get_current_sit_page(struct f2fs_sb_info *sbi,
 	return f2fs_get_meta_page(sbi, current_sit_addr(sbi, segno));
 }
 
+// 获得当前要写的块并填充，
 static struct page *get_next_sit_page(struct f2fs_sb_info *sbi,
 					unsigned int start)
 {
@@ -4014,14 +4030,14 @@ static struct page *get_next_sit_page(struct f2fs_sb_info *sbi,
 	struct page *page;
 	pgoff_t src_off, dst_off;
 
-	src_off = current_sit_addr(sbi, start);
-	dst_off = next_sit_addr(sbi, src_off);
+	src_off = current_sit_addr(sbi, start);// 当前的块地址
+	dst_off = next_sit_addr(sbi, src_off);// 将要写的块地址
 
 	page = f2fs_grab_meta_page(sbi, dst_off);
-	seg_info_to_sit_page(sbi, page, start);
+	seg_info_to_sit_page(sbi, page, start);// 填充要写的块
 
 	set_page_dirty(page);
-	set_to_next_sit(sit_i, start);
+	set_to_next_sit(sit_i, start);// 改变当前块
 
 	return page;
 }
@@ -4042,6 +4058,7 @@ static void release_sit_entry_set(struct sit_entry_set *ses)
 	kmem_cache_free(sit_entry_set_slab, ses);
 }
 
+// 排序，从小到大
 static void adjust_sit_entry_set(struct sit_entry_set *ses,
 						struct list_head *head)
 {
@@ -4057,6 +4074,7 @@ static void adjust_sit_entry_set(struct sit_entry_set *ses,
 	list_move_tail(&ses->set_list, &next->set_list);
 }
 
+// 仅增加set中的entry_cnt计数，然后从小到大排序
 static void add_sit_entry(unsigned int segno, struct list_head *head)
 {
 	struct sit_entry_set *ses;
@@ -4077,6 +4095,7 @@ static void add_sit_entry(unsigned int segno, struct list_head *head)
 	list_add(&ses->set_list, head);
 }
 
+// 计算每个sit块的脏entry数量
 static void add_sits_in_set(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_sm_info *sm_info = SM_I(sbi);
@@ -4087,6 +4106,26 @@ static void add_sits_in_set(struct f2fs_sb_info *sbi)
 	for_each_set_bit(segno, bitmap, MAIN_SEGS(sbi))
 		add_sit_entry(segno, set_list);
 }
+
+// umount时，下刷pm中的sit entries
+// static void add_sits_in_set_umount(struct f2fs_sb_info *sbi)
+// {
+// 	struct f2fs_sm_info *sm_info = SM_I(sbi);
+// 	struct list_head *set_list = &sm_info->sit_entry_set;
+// 	unsigned int main_bitmap_size = f2fs_bitmap_size(MAIN_SEGS(sbi));
+// 	unsigned long *bitmap = SIT_I(sbi)->dirty_sentries_bitmap;
+// 	unsigned long *pm_bitmap = SIT_I(sbi)->pm_sentries_bitmap;
+// 	unsigned long *ssd_bitmap = f2fs_kvzalloc(sbi, main_bitmap_size,
+// 								GFP_KERNEL);
+// 	unsigned int segno;
+
+// 	bitmap_or(ssd_bitmap, bitmap, pm_bitmap, main_bitmap_size);
+
+// 	for_each_set_bit(segno, ssd_bitmap, MAIN_SEGS(sbi))
+// 		add_sit_entry(segno, set_list);
+
+// 	kvfree(ssd_bitmap);
+// }
 
 static void remove_sits_in_journal(struct f2fs_sb_info *sbi)
 {
@@ -4109,6 +4148,34 @@ static void remove_sits_in_journal(struct f2fs_sb_info *sbi)
 	up_write(&curseg->journal_rwsem);
 }
 
+// 下刷内存中下刷到pm中的sit
+static void remove_sits_in_pm(struct f2fs_sb_info *sbi)
+{
+	unsigned long *pm_bitmap = SIT_I(sbi)->pm_sentries_bitmap;
+	struct f2fs_sm_info *sm_info = SM_I(sbi);
+	struct list_head *set_list = &sm_info->sit_entry_set;
+	int segno;
+
+	for_each_set_bit(segno, pm_bitmap, MAIN_SEGS(sbi)){
+		bool dirtied;
+
+		dirtied = __mark_sit_entry_dirty(sbi, segno);
+
+		if (!dirtied)
+			add_sit_entry(segno, set_list);
+	}
+}
+
+// static void f2fs_write_sit_to_pm(struct seg_entry *se, unsigned int segno){
+
+// 	//f2fs_info(sbi,"wirte nid %u to addr %llx",nid,(unsigned long long)vaddr);
+// 	if(__copy_from_user_inatomic(vaddr, (void *)ni, NAT_NVM_SIZE)){
+// 		f2fs_err(sbi, "write nat on nvm failed! nid:%u", ni->nid);
+// 	}
+// 	//f2fs_info(sbi,"after write blk_addr on pm :%u", ni->blk_addr);
+
+// }
+
 /*
  * CP calls this function, which flushes SIT entries including sit_journal,
  * and moves prefree segs to free segs.
@@ -4117,16 +4184,18 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	unsigned long *bitmap = sit_i->dirty_sentries_bitmap;
+	unsigned long *pm_bitmap = sit_i->pm_sentries_bitmap;//konna
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_COLD_DATA);
 	struct f2fs_journal *journal = curseg->journal;
 	struct sit_entry_set *ses, *tmp;
 	struct list_head *head = &SM_I(sbi)->sit_entry_set;
 	bool to_journal = !is_sbi_flag_set(sbi, SBI_IS_RESIZEFS);
+	bool to_pm = false;//konna
 	struct seg_entry *se;
 
 	down_write(&sit_i->sentry_lock);
 
-	if (!sit_i->dirty_sentries)
+	if (!sit_i->dirty_sentries)// 有无脏sit entry
 		goto out;
 
 	/*
@@ -4142,8 +4211,13 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	 */
 	if (!__has_cursum_space(journal, sit_i->dirty_sentries, SIT_JOURNAL) ||
 								!to_journal)
-		remove_sits_in_journal(sbi);
+		remove_sits_in_journal(sbi);// journal空间不够就删除
 
+	if(!is_set_cpc_flag(cpc, CP_UMOUNT)){
+		to_pm = true;
+	} else {
+		remove_sits_in_pm(sbi);
+	}
 	/*
 	 * there are two steps to flush sit entries:
 	 * #1, flush sit entries to journal in current cold data summary block.
@@ -4152,9 +4226,9 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	list_for_each_entry_safe(ses, tmp, head, set_list) {
 		struct page *page = NULL;
 		struct f2fs_sit_block *raw_sit = NULL;
-		unsigned int start_segno = ses->start_segno;
+		unsigned int start_segno = ses->start_segno;// 脏set的首segno
 		unsigned int end = min(start_segno + SIT_ENTRY_PER_BLOCK,
-						(unsigned long)MAIN_SEGS(sbi));
+						(unsigned long)MAIN_SEGS(sbi));// 块最后一个segno
 		unsigned int segno = start_segno;
 
 		if (to_journal &&
@@ -4163,12 +4237,15 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 
 		if (to_journal) {
 			down_write(&curseg->journal_rwsem);
+		} else if(to_pm){
+			raw_sit = PM_I(sbi)->p_sit_va_start + ((u64)SIT_BLOCK_OFFSET(start_segno)<<F2FS_BLKSIZE_BITS);
 		} else {
 			page = get_next_sit_page(sbi, start_segno);
 			raw_sit = page_address(page);
 		}
 
 		/* flush dirty sit entries in region of current sit set */
+		// 下刷每个set的脏entry
 		for_each_set_bit_from(segno, bitmap, end) {
 			int offset, sit_offset;
 
@@ -4182,7 +4259,7 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 			/* add discard candidates */
 			if (!(cpc->reason & CP_DISCARD)) {
 				cpc->trim_start = segno;
-				add_discard_addrs(sbi, cpc, false);
+				add_discard_addrs(sbi, cpc, false);// 加入候选discard块
 			}
 
 			if (to_journal) {
@@ -4192,29 +4269,39 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 				segno_in_journal(journal, offset) =
 							cpu_to_le32(segno);
 				seg_info_to_raw_sit(se,
-					&sit_in_journal(journal, offset));
+					&sit_in_journal(journal, offset));// 写入journal
 				check_block_count(sbi, segno,
 					&sit_in_journal(journal, offset));
+			} else if(to_pm){
+				sit_offset = SIT_ENTRY_OFFSET(sit_i, segno);
+				seg_info_to_raw_sit(se,
+						&raw_sit->entries[sit_offset]);// 写入sit页中
+				check_block_count(sbi, segno,
+						&raw_sit->entries[sit_offset]);
+				set_bit(segno, pm_bitmap);// konna
 			} else {
 				sit_offset = SIT_ENTRY_OFFSET(sit_i, segno);
 				seg_info_to_raw_sit(se,
-						&raw_sit->entries[sit_offset]);
+						&raw_sit->entries[sit_offset]);// 写入sit页中
 				check_block_count(sbi, segno,
 						&raw_sit->entries[sit_offset]);
+				clear_bit(segno, pm_bitmap);// konna
 			}
 
-			__clear_bit(segno, bitmap);
+			__clear_bit(segno, bitmap);// 清除脏位图
 			sit_i->dirty_sentries--;
 			ses->entry_cnt--;
 		}
 
 		if (to_journal)
 			up_write(&curseg->journal_rwsem);
-		else
+		else if(to_pm){
+			arch_wb_cache_pmem(raw_sit, F2FS_BLKSIZE);
+		} else 
 			f2fs_put_page(page, 1);
 
 		f2fs_bug_on(sbi, ses->entry_cnt);
-		release_sit_entry_set(ses);
+		release_sit_entry_set(ses);// 释放所有的set
 	}
 
 	f2fs_bug_on(sbi, !list_empty(head));
@@ -4224,13 +4311,13 @@ out:
 		__u64 trim_start = cpc->trim_start;
 
 		for (; cpc->trim_start <= cpc->trim_end; cpc->trim_start++)
-			add_discard_addrs(sbi, cpc, false);
+			add_discard_addrs(sbi, cpc, false);// 加入discard候选
 
 		cpc->trim_start = trim_start;
 	}
 	up_write(&sit_i->sentry_lock);
 
-	set_prefree_as_free_segments(sbi);
+	set_prefree_as_free_segments(sbi);// 将dirty_seglist_info中所有的PRE段加到free_segmap_info中
 }
 
 static int build_sit_info(struct f2fs_sb_info *sbi)
@@ -4259,6 +4346,12 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 	sit_i->dirty_sentries_bitmap = f2fs_kvzalloc(sbi, main_bitmap_size,
 								GFP_KERNEL);
 	if (!sit_i->dirty_sentries_bitmap)
+		return -ENOMEM;
+
+	// konna
+	sit_i->pm_sentries_bitmap = f2fs_kvzalloc(sbi, main_bitmap_size,
+								GFP_KERNEL);
+	if (!sit_i->pm_sentries_bitmap)
 		return -ENOMEM;
 
 #ifdef CONFIG_F2FS_CHECK_FS
@@ -5235,6 +5328,7 @@ static void destroy_sit_info(struct f2fs_sb_info *sbi)
 	kvfree(sit_i->sentries);
 	kvfree(sit_i->sec_entries);
 	kvfree(sit_i->dirty_sentries_bitmap);
+	kvfree(sit_i->pm_sentries_bitmap);//konna
 
 	SM_I(sbi)->sit_info = NULL;
 	kvfree(sit_i->sit_bitmap);

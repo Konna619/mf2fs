@@ -245,7 +245,7 @@ struct sit_info {
 	block_t sit_blocks;		/* # of blocks used by SIT area */
 	block_t written_valid_blocks;	/* # of valid blocks in main area */
 	char *bitmap;			/* all bitmaps pointer */
-	char *sit_bitmap;		/* SIT bitmap pointer */
+	char *sit_bitmap;		/* SIT bitmap pointer // 有效sit块的位图*/
 #ifdef CONFIG_F2FS_CHECK_FS
 	char *sit_bitmap_mir;		/* SIT bitmap mirror */
 
@@ -255,12 +255,15 @@ struct sit_info {
 	unsigned int bitmap_size;	/* SIT bitmap size */
 
 	unsigned long *tmp_map;			/* bitmap for temporal use */
-	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries */
+	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries // 脏sit entry位图*/
 	unsigned int dirty_sentries;		/* # of dirty sentries */
 	unsigned int sents_per_block;		/* # of SIT entries per block */
 	struct rw_semaphore sentry_lock;	/* to protect SIT cache */
 	struct seg_entry *sentries;		/* SIT segment-level cache */
 	struct sec_entry *sec_entries;		/* SIT section-level cache */
+
+	/* for sit on pm */
+	unsigned long *pm_sentries_bitmap;
 
 	/* for cost-benefit algorithm in cleaning procedure */
 	unsigned long long elapsed_time;	/* elapsed time after mount */
@@ -399,6 +402,7 @@ static inline void __seg_info_to_raw_sit(struct seg_entry *se,
 	rs->mtime = cpu_to_le64(se->mtime);
 }
 
+// 将内存中的sit entry写到page中
 static inline void seg_info_to_sit_page(struct f2fs_sb_info *sbi,
 				struct page *page, unsigned int start)
 {
@@ -752,6 +756,7 @@ static inline int check_block_count(struct f2fs_sb_info *sbi,
 	return 0;
 }
 
+// start所在sit块的有效副本地址
 static inline pgoff_t current_sit_addr(struct f2fs_sb_info *sbi,
 						unsigned int start)
 {

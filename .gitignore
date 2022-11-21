@@ -155,3 +155,34 @@ x509.genkey
 
 # Documentation toolchain
 sphinx_*/
+fs/ori_f2fs/acl.c
+fs/ori_f2fs/acl.h
+fs/ori_f2fs/checkpoint.c
+fs/ori_f2fs/compress.c
+fs/ori_f2fs/data.c
+fs/ori_f2fs/debug.c
+fs/ori_f2fs/dir.c
+fs/ori_f2fs/extent_cache.c
+fs/ori_f2fs/f2fs.h
+fs/ori_f2fs/file.c
+fs/ori_f2fs/gc.c
+fs/ori_f2fs/gc.h
+fs/ori_f2fs/hash.c
+fs/ori_f2fs/inline.c
+fs/ori_f2fs/inode.c
+fs/ori_f2fs/Kconfig
+fs/ori_f2fs/Makefile
+fs/ori_f2fs/namei.c
+fs/ori_f2fs/node.c
+fs/ori_f2fs/node.h
+fs/ori_f2fs/recovery.c
+fs/ori_f2fs/segment.c
+fs/ori_f2fs/segment.h
+fs/ori_f2fs/shrinker.c
+fs/ori_f2fs/super.c
+fs/ori_f2fs/sysfs.c
+fs/ori_f2fs/trace.c
+fs/ori_f2fs/trace.h
+fs/ori_f2fs/verity.c
+fs/ori_f2fs/xattr.c
+fs/ori_f2fs/xattr.h

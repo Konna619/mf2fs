@@ -1040,7 +1040,7 @@ struct f2fs_sm_info {
 	/* for batched trimming */
 	unsigned int trim_sections;		/* # of sections to trim */
 
-	struct list_head sit_entry_set;	/* sit entry set list */
+	struct list_head sit_entry_set;	/* sit entry set list // 每个sit块中的脏entry构成一个set，所有set链入此表 */
 
 	unsigned int ipu_policy;	/* in-place-update policy */
 	unsigned int min_ipu_util;	/* in-place-update threshold */
@@ -1981,6 +1981,12 @@ static inline bool enabled_nat_bits(struct f2fs_sb_info *sbi,
 	bool set = is_set_ckpt_flags(sbi, CP_NAT_BITS_FLAG);
 
 	return (cpc) ? (cpc->reason & CP_UMOUNT) && set : set;
+}
+
+// konna
+static inline bool is_set_cpc_flag(struct cp_control *cpc, unsigned int f)
+{
+	return cpc->reason & f;
 }
 
 static inline void f2fs_lock_op(struct f2fs_sb_info *sbi)
@@ -4057,11 +4063,13 @@ static inline bool f2fs_blkz_is_seq(struct f2fs_sb_info *sbi, int devi,
 }
 #endif
 
+// 文件系统是否是zbd
 static inline bool f2fs_hw_should_discard(struct f2fs_sb_info *sbi)
 {
 	return f2fs_sb_has_blkzoned(sbi);
 }
 
+// 判断设备能否discard或设备是否是zbd
 static inline bool f2fs_bdev_support_discard(struct block_device *bdev)
 {
 	return blk_queue_discard(bdev_get_queue(bdev)) ||
@@ -4081,6 +4089,7 @@ static inline bool f2fs_hw_support_discard(struct f2fs_sb_info *sbi)
 	return false;
 }
 
+// 判断文件系统是否支持实时discard
 static inline bool f2fs_realtime_discard_enable(struct f2fs_sb_info *sbi)
 {
 	return (test_opt(sbi, DISCARD) && f2fs_hw_support_discard(sbi)) ||

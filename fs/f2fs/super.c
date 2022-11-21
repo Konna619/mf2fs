@@ -3577,23 +3577,27 @@ no_bdev:
 }
 
 // konnatest
-// static void test(struct f2fs_sb_info *sbi, block_t blkaddr){
-// 	struct seg_entry *se;
-// 	unsigned int segno, offset;
-// 	bool exist;
+static void test(struct f2fs_sb_info *sbi){
+	// struct seg_entry *se;
+	// unsigned int segno, offset;
+	// bool exist;
 
-// 	segno = GET_SEGNO(sbi, blkaddr);
-// 	offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
-// 	se = get_seg_entry(sbi, segno);
-// 	exist = f2fs_test_bit(offset, se->cur_valid_map);
-// 	if(!exist){
-// 		f2fs_err(sbi, "after build sm, error blkaddr:%u, sit bitmap:%d",
-// 			 blkaddr, exist);
-// 	}
-// 	f2fs_err(sbi, "after build sm, not error blkaddr:%u, sit bitmap:%d",
-// 			 blkaddr, exist);
-// 	return;
-// }
+	// segno = GET_SEGNO(sbi, blkaddr);
+	// offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
+	// se = get_seg_entry(sbi, segno);
+	// exist = f2fs_test_bit(offset, se->cur_valid_map);
+	// if(!exist){
+	// 	f2fs_err(sbi, "after build sm, error blkaddr:%u, sit bitmap:%d",
+	// 		 blkaddr, exist);
+	// }
+	// f2fs_err(sbi, "after build sm, not error blkaddr:%u, sit bitmap:%d",
+	// 		 blkaddr, exist);
+
+	f2fs_info(sbi, "SIT_ENTRY_PER_BLOCK : %lu",SIT_ENTRY_PER_BLOCK);
+	f2fs_info(sbi, "NAT_ENTRY_PER_BLOCK : %lu",NAT_ENTRY_PER_BLOCK);
+
+	return;
+}
 
 //konna
 static void f2fs_init_pm_info_meta_va(struct f2fs_sb_info *sbi){
@@ -3695,9 +3699,13 @@ try_onemore:
 			goto free_pm_dev;
 		}
 		f2fs_init_pm_info_meta_va(sbi);
+	} else {
+		f2fs_err(sbi, "Can not run without PMEM");
+		goto free_options;
 	}
 	/* konna */
 	
+	test(sbi);
 
 #ifdef CONFIG_QUOTA
 	sb->dq_op = &f2fs_quota_operations;
