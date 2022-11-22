@@ -15,7 +15,8 @@
 #include <linux/timer.h>
 #include <linux/freezer.h>
 #include <linux/sched/signal.h>
-#include <linux/libnvdimm.h>	//konna
+#include <linux/libnvdimm.h>	//konna arch_wb_cache_pmem
+#include <linux/mm.h>			//konna	virt_to_page()
 
 #include "f2fs.h"
 #include "segment.h"
@@ -2400,6 +2401,8 @@ int f2fs_npages_for_summary_flush(struct f2fs_sb_info *sbi, bool for_ra)
 	return 3;
 }
 
+
+
 /*
  * Caller should put this summary page
  */
@@ -2420,10 +2423,27 @@ void f2fs_update_meta_page(struct f2fs_sb_info *sbi,
 	f2fs_put_page(page, 1);
 }
 
+// konna
+void f2fs_update_meta_page_on_pm(struct f2fs_sb_info *sbi,
+					void *src, block_t blk_addr)
+{
+	// void *dst = PM_I(sbi)->p_va_start + ((unsigned long long)blk_addr<<PAGE_SIZE);
+
+	// memcpy(dst, src, PAGE_SIZE);
+	// arch_wb_cache_pmem(dst, PAGE_SIZE);
+
+	struct page *page = f2fs_grab_meta_page(sbi, blk_addr);
+
+	memcpy(page_address(page), src, PAGE_SIZE);
+	// set_page_dirty(page);
+	f2fs_put_page(page, 1);
+}
+
 static void write_sum_page(struct f2fs_sb_info *sbi,
 			struct f2fs_summary_block *sum_blk, block_t blk_addr)
 {
 	f2fs_update_meta_page(sbi, (void *)sum_blk, blk_addr);
+	// f2fs_update_meta_page_on_pm(sbi, (void *)sum_blk, blk_addr);
 }
 
 static void write_current_sum_page(struct f2fs_sb_info *sbi,
@@ -3966,6 +3986,7 @@ static void write_compacted_summaries(struct f2fs_sb_info *sbi, block_t blkaddr)
 	}
 }
 
+// 仅用于写当前段的SSA
 static void write_normal_summaries(struct f2fs_sb_info *sbi,
 					block_t blkaddr, int type)
 {
@@ -3979,6 +4000,7 @@ static void write_normal_summaries(struct f2fs_sb_info *sbi,
 		write_current_sum_page(sbi, i, blkaddr + (i - type));
 }
 
+// 写压缩的或未压缩的当前DATA段的SSA
 void f2fs_write_data_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 {
 	if (is_set_ckpt_flags(sbi, CP_COMPACT_SUM_FLAG))
@@ -3987,6 +4009,7 @@ void f2fs_write_data_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 		write_normal_summaries(sbi, start_blk, CURSEG_HOT_DATA);
 }
 
+// 写当前NODE段的SSA
 void f2fs_write_node_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 {
 	write_normal_summaries(sbi, start_blk, CURSEG_HOT_NODE);

@@ -33,6 +33,8 @@ void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io)
 
 /*
  * We guarantee no failure on the returned page.
+ * 仅获取meta页缓存中的页
+ * lock page并引用计数加一
  */
 struct page *f2fs_grab_meta_page(struct f2fs_sb_info *sbi, pgoff_t index)
 {
@@ -102,9 +104,67 @@ out:
 	return page;
 }
 
+static int read_page_from_pm(void *src, void *dst, size_t size)
+{
+	return __copy_to_user_inatomic(dst, src, size);
+}
+
+static struct page *__get_meta_page_on_pm(struct f2fs_sb_info *sbi, pgoff_t index)
+{
+	struct address_space *mapping = META_MAPPING(sbi);
+	struct page *page;
+	void *src = PM_I(sbi)->p_va_start + ((unsigned long long)index<<PAGE_SHIFT);
+	void *dst;
+	int err;
+
+repeat:
+	page = f2fs_grab_cache_page(mapping, index, false);
+	if (!page) {
+		cond_resched();
+		goto repeat;
+	}
+
+	if (PageUptodate(page))
+		goto out;
+
+	// fio.page = page;
+	dst = page_address(page);
+
+	// err = f2fs_submit_page_bio(&fio);
+	err = read_page_from_pm(src, dst, PAGE_SIZE);
+	f2fs_info(sbi, "read pm page %llx", (u64)src);
+	if (!PageUptodate(page))
+		SetPageUptodate(page);
+	if (err) {
+		f2fs_put_page(page, 1);
+		return ERR_PTR(err);
+	}
+
+	f2fs_update_iostat(sbi, FS_META_READ_IO, F2FS_BLKSIZE);
+
+	if (unlikely(page->mapping != mapping)) {
+		f2fs_put_page(page, 1);
+		goto repeat;
+	}
+	//printk("block here6\n");
+	if (unlikely(!PageUptodate(page))) {
+		f2fs_put_page(page, 1);
+		return ERR_PTR(-EIO);
+	}
+out:
+	return page;
+}
+
+// 有可能读ssd
+// lock page并引用计数加一
 struct page *f2fs_get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index)
 {
 	return __get_meta_page(sbi, index, true);
+}
+
+struct page *f2fs_get_meta_page_on_pm(struct f2fs_sb_info *sbi, pgoff_t index)
+{
+	return __get_meta_page_on_pm(sbi, index);
 }
 
 struct page *f2fs_get_meta_page_retry(struct f2fs_sb_info *sbi, pgoff_t index)

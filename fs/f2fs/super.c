@@ -3558,10 +3558,10 @@ static int f2fs_get_pm_info(struct f2fs_sb_info *sbi)
 	pi->p_size = size;
 	pi->p_va_start = virt_addr;
 	pi->p_pa_start = pfn_t_to_pfn(__pfn_t) << PAGE_SHIFT;
-	f2fs_info(sbi, "Mount PM device: %s, size: %lu bytes, start va in kernel: %p, start pa: %llu",
+	f2fs_info(sbi, "Mount PM device: %s, size: %lu bytes, start va in kernel: %llx, start pa: %llu",
 					pi->device_path,
 					pi->p_size,
-					pi->p_va_start,
+					(u64)pi->p_va_start,
 					pi->p_pa_start);
 
 	return 0;

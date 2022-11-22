@@ -264,6 +264,7 @@ struct sit_info {
 
 	/* for sit on pm */
 	unsigned long *pm_sentries_bitmap;
+	unsigned long *pm_summary_bitmap;
 
 	/* for cost-benefit algorithm in cleaning procedure */
 	unsigned long long elapsed_time;	/* elapsed time after mount */
