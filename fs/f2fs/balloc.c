@@ -74,7 +74,7 @@ static void f2fs_init_free_list(struct f2fs_sb_info *sbi, struct free_list *free
 	free_list->block_end = per_list_blocks -1;
 	sbi->curr_block = main_blkaddr;
 
-	f2fs_info(sbi, "f2fs_init_free_list: main_blkaddr = %u", main_blkaddr);
+	//f2fs_info(sbi, "f2fs_init_free_list: main_blkaddr = %u", main_blkaddr);
 }
 
 struct f2fs_range_node *f2fs_alloc_blocknode(){

@@ -110,10 +110,12 @@ static void clear_node_page_dirty(struct page *page)
 
 static struct page *get_current_nat_page(struct f2fs_sb_info *sbi, nid_t nid)
 {
+	//替换了原本的f2fs_get_meta_page
 	return f2fs_get_meta_page_on_pm(sbi, current_nat_addr(sbi, nid));
 }
 
 // 将nat对应的当前页拷贝到下一个页，并返回下一个页用于后续修改，并将nm_i->nat_bitmap对应位取反
+#if 0	//不再使用
 static struct page *get_next_nat_page(struct f2fs_sb_info *sbi, nid_t nid)
 {
 	struct page *src_page;
@@ -142,6 +144,7 @@ static struct page *get_next_nat_page(struct f2fs_sb_info *sbi, nid_t nid)
 
 	return dst_page;
 }
+#endif
 
 // konna
 // 将nat对应的当前页拷贝到下一个页，并返回下一个页用于后续修改，并将nm_i->nat_bitmap对应位取反
@@ -160,13 +163,13 @@ static struct page *get_next_nat_page_no_dirty(struct f2fs_sb_info *sbi, nid_t n
 	src_page = get_current_nat_page(sbi, nid);
 	if (IS_ERR(src_page))
 		return src_page;
-	dst_page = f2fs_grab_meta_page(sbi, dst_off);
+	dst_page = f2fs_grab_cache_page(META_MAPPING(sbi), dst_off, false);
 	f2fs_bug_on(sbi, PageDirty(src_page));
 	//f2fs_info(sbi, "nid: %u is on %u", nid, dst_off);
 	src_addr = page_address(src_page);
 	dst_addr = page_address(dst_page);
 	memcpy(dst_addr, src_addr, PAGE_SIZE);
-	//set_page_dirty(dst_page);
+	//set_page_dirty(dst_page);//不再置脏
 	f2fs_put_page(src_page, 1);
 
 	set_to_next_nat(nm_i, nid);
@@ -215,26 +218,6 @@ static struct nat_entry *__init_nat_entry(struct f2fs_nm_info *nm_i,
 	nm_i->nat_cnt++;
 	return ne;
 }
-
-//konna
-// static struct nat_entry *__init_nat_entry_on_pm(struct f2fs_nm_info *nm_i,
-// 	struct nat_entry *ne, struct node_info *raw_ni, bool no_fail)
-// {
-// 	if (no_fail)
-// 		f2fs_radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne);
-// 	else if (radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne))
-// 		return NULL;
-
-// 	if (raw_ni)
-// 		copy_node_info_from_pm(&ne->ni, raw_ni);
-
-// 	spin_lock(&nm_i->nat_list_lock);
-// 	list_add_tail(&ne->list, &nm_i->nat_entries);
-// 	spin_unlock(&nm_i->nat_list_lock);
-
-// 	nm_i->nat_cnt++;
-// 	return ne;
-// }
 
 // 到f2fs_nm_info缓存的nat entry radix tree中找有没有缓存，如果有且是clean就添加到nat_entries lru的尾部
 static struct nat_entry *__lookup_nat_cache(struct f2fs_nm_info *nm_i, nid_t n)
@@ -480,31 +463,6 @@ static void cache_nat_entry(struct f2fs_sb_info *sbi, nid_t nid,
 		__free_nat_entry(new);
 }
 
-//konna
-// static void cache_nat_entry_on_pm(struct f2fs_sb_info *sbi, nid_t nid,
-// 						struct node_info *ni)
-// {
-// 	struct f2fs_nm_info *nm_i = NM_I(sbi);
-// 	struct nat_entry *new, *e;
-
-// 	new = __alloc_nat_entry(nid, false);// 在内存中分配一个nat_entry
-// 	if (!new)
-// 		return;
-
-// 	down_write(&nm_i->nat_tree_lock);
-// 	e = __lookup_nat_cache(nm_i, nid);// 看缓存中有没有
-// 	if (!e)
-// 		e = __init_nat_entry_on_pm(nm_i, new, ni, false); // 没有则初始化，并加入到clean nat entry链表中
-// 	else
-// 		f2fs_bug_on(sbi, nat_get_ino(e) != ni->ino ||
-// 				nat_get_blkaddr(e) !=
-// 					ni->blk_addr ||
-// 				nat_get_version(e) != ni->version); // 有的话，看看属性都对不对
-// 	up_write(&nm_i->nat_tree_lock);
-// 	if (e != new)
-// 		__free_nat_entry(new);
-// }
-
 static void set_node_addr(struct f2fs_sb_info *sbi, struct node_info *ni,
 			block_t new_blkaddr, bool fsync_done)
 {
@@ -596,28 +554,8 @@ int f2fs_try_to_free_nats(struct f2fs_sb_info *sbi, int nr_shrink)
 	return nr - nr_shrink;
 }
 
-//konna
-// 从nvm中读出nat_entry,赋值给node_info
-// static int f2fs_read_nat_from_pm(struct f2fs_sb_info *sbi, struct node_info *ni, nid_t nid)
-// {
-// 	struct f2fs_pm_info *pm_i = PM_I(sbi);
-// 	// struct nat_entry ne;
-
-// 	void *vaddr = pm_i->p_nat_va_start + ((unsigned long long)nid << NAT_NVM_SHIFT );
-// 	// __copy_to_user_inatomic(&ne, vaddr, NAT_NVM_SIZE);
-// 	struct node_info *nip = (struct node_info *)vaddr;
-// 	// f2fs_info(sbi,"read nid %u from addr %llx",nid,(unsigned long long)vaddr);
-// 	// f2fs_info(sbi,"nat entry size:%u",sizeof(struct nat_entry));
-// 	// f2fs_info(sbi,"node info size:%u",sizeof(struct node_info));
-// 	// f2fs_info(sbi,"nvm node info size:%u",sizeof(struct nvm_node_info));
-// 	// f2fs_info(sbi,"f2fs nat entry size:%u",sizeof(struct f2fs_nat_entry));
-// 	ni->ino = nip->ino;
-// 	ni->blk_addr = nip->blk_addr;
-// 	ni->version = nip->version;
-
-// 	return 0;
-// }
-
+// konna
+// 关键修改：缓存和journal中找不到nat时，到pm上读nat页
 int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 						struct node_info *ni)
 {
@@ -663,20 +601,12 @@ int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 		goto cache;// 如果找到了，缓存该nat entry
 	}
 
-
-	// if( f2fs_read_nat_from_pm(sbi, ni, nid) == 0 ){
-	// 	//f2fs_info(sbi, "pm read nat nid: %u addr: %u", nid, ni->blk_addr);
-	// 	up_read(&nm_i->nat_tree_lock);
-	// 	goto cache_pm;
-	// }
-
-
 	/* Fill node_info from nat page */
 	index = current_nat_addr(sbi, nid);//找到nid对应nat所在的有效块号，相邻两个段保存两个512*455个nat_entry
 	up_read(&nm_i->nat_tree_lock);
 
 	// page = f2fs_get_meta_page(sbi, index);
-	page = f2fs_get_meta_page_on_pm(sbi, index);
+	page = f2fs_get_meta_page_on_pm(sbi, index);// 到pm上读nat页
 	if (IS_ERR(page))
 		return PTR_ERR(page);
 
@@ -684,9 +614,6 @@ int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 	ne = nat_blk->entries[nid - start_nid];//在block中找到nat_entry
 	node_info_from_raw_nat(ni, &ne);
 	f2fs_put_page(page, 1);
-	// if( test_opt(sbi, PMEM) ){
-	//f2fs_info(sbi, "pm read nat nid: %u addr: %u", nid, ni->blk_addr);
-	// }
 cache:
 	blkaddr = le32_to_cpu(ne.block_addr);
 	if (__is_valid_data_blkaddr(blkaddr) &&
@@ -696,15 +623,6 @@ cache:
 	/* cache nat entry */
 	cache_nat_entry(sbi, nid, &ne);	// 加入clean 缓存
 	return 0;
-// cache_pm:
-// 	blkaddr = le32_to_cpu(ne.block_addr);
-// 	if (__is_valid_data_blkaddr(blkaddr) &&
-// 		!f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC_ENHANCE))//blkaddr应当是空闲的？
-// 		return -EFAULT;
-
-// 	/* cache nat entry */
-// 	cache_nat_entry_on_pm(sbi, nid, ni);	// 从pm加入clean 缓存
-// 	return 0;
 }
 
 /*
@@ -1444,6 +1362,7 @@ static int read_node_page(struct page *page, int op_flags)
 
 /*
  * Readahead a node page
+ * 预读nid的node page
  */
 void f2fs_ra_node_page(struct f2fs_sb_info *sbi, nid_t nid)
 {
@@ -1455,7 +1374,7 @@ void f2fs_ra_node_page(struct f2fs_sb_info *sbi, nid_t nid)
 	if (f2fs_check_nid_range(sbi, nid))
 		return;
 
-	apage = xa_load(&NODE_MAPPING(sbi)->i_pages, nid);//看node mapping缓存中有无node page
+	apage = xa_load(&NODE_MAPPING(sbi)->i_pages, nid);//尝试在node mapping缓存加载一个page
 	if (apage)
 		return;
 
@@ -1716,7 +1635,6 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 
 	fio.old_blkaddr = ni.blk_addr;
 	f2fs_do_write_node_page(nid, &fio);// 写node page到新页中
-	//f2fs_info(sbi, "write node nid:%u to blkaddr:%u",nid,fio.new_blkaddr);
 	set_node_addr(sbi, &ni, fio.new_blkaddr, is_fsync_dnode(page));// 修改nat entry
 	dec_page_count(sbi, F2FS_DIRTY_NODES);
 	up_read(&sbi->node_write);
@@ -2414,7 +2332,7 @@ static void remove_free_nid(struct f2fs_sb_info *sbi, nid_t nid)
 }
 
 static int scan_nat_page(struct f2fs_sb_info *sbi,
-			struct page *nat_page, nid_t start_nid)
+			struct page *nat_page, nid_t start_nid, bool mount)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	struct f2fs_nat_block *nat_blk = page_address(nat_page);
@@ -2425,6 +2343,14 @@ static int scan_nat_page(struct f2fs_sb_info *sbi,
 	__set_bit_le(nat_ofs, nm_i->nat_block_bitmap);//标记nat_ofs号nat block的free nid bitmap已缓存
 
 	i = start_nid % NAT_ENTRY_PER_BLOCK;
+
+	if(mount && start_nid == 0){
+		if(!nat_blk->entries[1].block_addr){
+			nat_blk->entries[1].block_addr = cpu_to_le32(1);
+			nat_blk->entries[2].block_addr = cpu_to_le32(1);
+			nat_blk->entries[3].block_addr = cpu_to_le32(1);
+		}
+	}
 
 	for (; i < NAT_ENTRY_PER_BLOCK; i++, start_nid++) {
 		if (unlikely(start_nid >= nm_i->max_nid))
@@ -2447,6 +2373,7 @@ static int scan_nat_page(struct f2fs_sb_info *sbi,
 	return 0;
 }
 
+// 扫描nat journal
 static void scan_curseg_cache(struct f2fs_sb_info *sbi)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
@@ -2468,6 +2395,7 @@ static void scan_curseg_cache(struct f2fs_sb_info *sbi)
 	up_read(&curseg->journal_rwsem);
 }
 
+// 扫描已缓存的空闲nid位图和当前的nat journal
 static void scan_free_nid_bits(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
@@ -2500,6 +2428,8 @@ out:
 	up_read(&nm_i->nat_tree_lock);
 }
 
+// konna
+// 关键修改：挂载系统时，预读pm上的nat页，将最初的nid 1和2的地址改为1
 static int __f2fs_build_free_nids(struct f2fs_sb_info *sbi,
 						bool sync, bool mount)
 {
@@ -2529,8 +2459,10 @@ static int __f2fs_build_free_nids(struct f2fs_sb_info *sbi,
 	}
 
 	/* readahead nat pages to be scanned */
-	f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), FREE_NID_PAGES,
-							META_NAT, true);
+	// f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), FREE_NID_PAGES,
+	// 						META_NAT, true);
+	f2fs_ra_meta_pages_on_pm(sbi, NAT_BLOCK_OFFSET(nid), FREE_NID_PAGES,
+							META_NAT);// 预读pm上的nat页
 
 	down_read(&nm_i->nat_tree_lock);
 
@@ -2542,7 +2474,7 @@ static int __f2fs_build_free_nids(struct f2fs_sb_info *sbi,
 			if (IS_ERR(page)) {
 				ret = PTR_ERR(page);
 			} else {
-				ret = scan_nat_page(sbi, page, nid);
+				ret = scan_nat_page(sbi, page, nid, mount);//konna
 				f2fs_put_page(page, 1);
 			}
 
@@ -2961,40 +2893,6 @@ add_out:
 	list_add_tail(&nes->set_list, head);
 }
 
-// static void __update_nat_bits_based_on_pm(struct f2fs_sb_info *sbi, nid_t start_nid)
-// {
-// 	struct f2fs_nm_info *nm_i = NM_I(sbi);
-// 	struct f2fs_pm_info *pm_i = PM_I(sbi);
-// 	unsigned int nat_index = start_nid / NAT_ENTRY_PER_BLOCK;
-// 	struct node_info *ni = pm_i->p_nat_va_start + ((unsigned long long)start_nid<<NAT_NVM_SHIFT);
-// 	int valid = 0;
-// 	int i = 0;
-
-// 	if (!enabled_nat_bits(sbi, NULL))// 没有CP_NAT_BITS_FLAG标志，不会更新
-// 		return;
-	
-// 	if (nat_index == 0) {// 0号nat块的0号nid永远有效
-// 		valid = 1;
-// 		i = 1;
-// 	}
-// 	for (; i < NAT_ENTRY_PER_BLOCK; i++) {//计算valid nid数量
-// 		if (ni[i].blk_addr != NULL_ADDR)
-// 			valid++;
-// 	}
-// 	if (valid == 0) {// 如果valid nid为0
-// 		__set_bit_le(nat_index, nm_i->empty_nat_bits);// empty置位
-// 		__clear_bit_le(nat_index, nm_i->full_nat_bits);// full置零
-// 		return;
-// 	}
-
-// 	// 如果valid nid不为0
-// 	__clear_bit_le(nat_index, nm_i->empty_nat_bits);// empty置零
-// 	if (valid == NAT_ENTRY_PER_BLOCK)
-// 		__set_bit_le(nat_index, nm_i->full_nat_bits);// 满则置位
-// 	else
-// 		__clear_bit_le(nat_index, nm_i->full_nat_bits);// 不满则置零。说明在两个位图上都是0的nat块既不空，也不满
-// }
-
 static void __update_nat_bits(struct f2fs_sb_info *sbi, nid_t start_nid,
 						struct page *page)
 {
@@ -3029,30 +2927,16 @@ static void __update_nat_bits(struct f2fs_sb_info *sbi, nid_t start_nid,
 		__clear_bit_le(nat_index, nm_i->full_nat_bits);// 不满则置零。说明在两个位图上都是0的nat块既不空，也不满
 }
 
-// 将nat_entry写在nvm上nat_blkaddr后面的位置，按照nid排列
-// static void f2fs_write_nat_to_pm(struct node_info *ni, void *ni_on_pm){
-
-// 	//f2fs_info(sbi,"wirte nid %u to addr %llx",nid,(unsigned long long)vaddr);
-// 	if(__copy_from_user_inatomic(ni_on_pm, (void *)ni, NAT_NVM_SIZE)){
-// 		printk("write nat on nvm failed! nid:%u\n", ni->nid);
-// 	}
-// 	//f2fs_info(sbi,"after write blk_addr on pm :%u", ni->blk_addr);
-
-// }
-
+// konna
+// 关键修改：将原本写入ssd的page cache中的nat页不再置为脏，防止下刷，并将其写入pm
 static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 		struct nat_entry_set *set, struct cp_control *cpc)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
-	// struct f2fs_nm_info *nm_i = NM_I(sbi);//konna
-	// struct f2fs_pm_info *pm_i = PM_I(sbi);//konna
 	struct f2fs_journal *journal = curseg->journal;
 	nid_t start_nid = set->set * NAT_ENTRY_PER_BLOCK;//set对应的块偏移
 	bool to_journal = true;
-	//bool to_pm = false;// konna
-	// bool to_pm_ssd = false;// konna
 	void *p;// konna
-	// void *nat_startaddr_on_pm;// konna
 	struct f2fs_nat_block *nat_blk;
 	struct nat_entry *ne, *cur;
 	struct page *page = NULL;
@@ -3065,24 +2949,11 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 	if (enabled_nat_bits(sbi, cpc) ||	//umount且CP_NAT_BITS_FLAG时不写journal
 		!__has_cursum_space(journal, set->entry_cnt, NAT_JOURNAL)){//journal没有足够空间容纳set内所有nat，就不写journal
 		to_journal = false;
-		//to_pm = true;
 	}
-	// if (enabled_nat_bits(sbi, cpc)){
-	// 	to_journal = false;
-	// 	to_pm_ssd = true;
-	// 	goto start_flush;
-	// }
-	// if(!__has_cursum_space(journal, set->entry_cnt, NAT_JOURNAL)){
-	// 	to_journal = false;
-	// 	to_pm = true;
-	// }
 
-// start_flush:
 	if (to_journal) {
 		down_write(&curseg->journal_rwsem);
 	} else {
-		// nat_startaddr_on_pm = pm_i->p_va_start + ((unsigned long long)nm_i->nat_blkaddr<<F2FS_BLKSIZE_BITS);
-		// f2fs_info(sbi, "pm vaddr:%llx, nat start addr:%llx, offset:%llu",pm_i->p_va_start,nat_startaddr_on_pm,(unsigned long long)nm_i->nat_blkaddr<<F2FS_BLKSIZE_BITS);
 		page = get_next_nat_page_no_dirty(sbi, start_nid);// 将当前页拷贝到下一个页，并将下一页设为当前页
 		if (IS_ERR(page))
 			return PTR_ERR(page);
@@ -3091,15 +2962,6 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 		f2fs_bug_on(sbi, !nat_blk);
 		p = PM_I(sbi)->p_va_start + ((unsigned long long)current_nat_addr(sbi, start_nid)<<F2FS_BLKSIZE_BITS);
 	} 
-	// else {
-	// 	// ↓会将页设为脏
-	// 	page = get_next_nat_page(sbi, start_nid);// 将当前页拷贝到下一个页，并将下一页设为当前页
-	// 	if (IS_ERR(page))
-	// 		return PTR_ERR(page);
-
-	// 	nat_blk = page_address(page);// f2fs_nat_block地址
-	// 	f2fs_bug_on(sbi, !nat_blk);
-	// }
 
 	/* flush dirty nats in nat entry set */
 	list_for_each_entry_safe(ne, cur, &set->entry_list, list) {
@@ -3119,7 +2981,7 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 			//f2fs_info(sbi, "write to journal nid:%u , addr:%u", nid, ne->ni.blk_addr);
 		} else {	// 不写journal，到nat页中找到raw_ne的地址
 			raw_ne = &nat_blk->entries[nid - start_nid];
-			//f2fs_info(sbi, "write to ssd node table nid:%u , addr:%u, %llx", nid, ne->ni.blk_addr, p);
+			//f2fs_info(sbi, "write to ssd node table nid:%u , addr:%u, %llx", nid, ne->ni.blk_addr, (u64)p);
 		}
 
 		raw_nat_from_node_info(raw_ne, &ne->ni);	//写到raw_ne中
@@ -3137,17 +2999,13 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 	if (to_journal) {
 		up_write(&curseg->journal_rwsem);
 	} else {
-		// memcpy(p, nat_blk, F2FS_BLKSIZE);
-		__copy_from_user_inatomic(p, nat_blk, F2FS_BLKSIZE);
-		arch_wb_cache_pmem(p, F2FS_BLKSIZE);
-		f2fs_info(sbi, "write pm page %llx", (u64)p);
+		if(__copy_from_user_inatomic(p, nat_blk, F2FS_BLKSIZE)){
+			WARN_ON(1);
+		}
+		f2fs_info(sbi, "write nat pm page %llx", (u64)p);
 		__update_nat_bits(sbi, start_nid, page);// 更新nat bits
 		f2fs_put_page(page, 1);
 	}
-	//  else {
-	// 	__update_nat_bits(sbi, start_nid, page);// 更新nat bits
-	// 	f2fs_put_page(page, 1);
-	// }
 
 	/* Allow dirty nats by node block allocation in write_begin */
 	if (!set->entry_cnt) {// 如果set内没有脏nat缓存了，就释放这个set。有可能node block allocation会加入脏缓存，此时就不用释放了
@@ -3174,7 +3032,7 @@ int f2fs_flush_nat_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 
 	/* during unmount, let's flush nat_bits before checking dirty_nat_cnt */
 	if (enabled_nat_bits(sbi, cpc)) {// 此时，cpc没有NULL的时候，该判断表示umount，CP_NAT_BITS_FLAG表示cp所在段的最后几个块是nat bits
-		f2fs_info(sbi, "f2fs_flush_nat_entries:trace1!");
+		//f2fs_info(sbi, "f2fs_flush_nat_entries:trace1!");
 		down_write(&nm_i->nat_tree_lock);
 		remove_nats_in_journal(sbi);// 如果umount，无论当前journal还有没有空间，将其中的nats合并到nat entry set脏缓存中
 		up_write(&nm_i->nat_tree_lock);
@@ -3192,7 +3050,7 @@ int f2fs_flush_nat_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	 */
 	if (enabled_nat_bits(sbi, cpc) ||
 		!__has_cursum_space(journal, nm_i->dirty_nat_cnt, NAT_JOURNAL)){
-			f2fs_info(sbi, "f2fs_flush_nat_entries:trace2! dirty_nat_cnt: %u, journal_nat_cnt:%lu ",nm_i->dirty_nat_cnt, MAX_NAT_JENTRIES(journal));
+			//f2fs_info(sbi, "f2fs_flush_nat_entries:trace2! dirty_nat_cnt: %u, journal_nat_cnt:%lu ",nm_i->dirty_nat_cnt, MAX_NAT_JENTRIES(journal));
 			remove_nats_in_journal(sbi);// 如果umount，或当前journal不足以装下所有的dirty nat，将journal中的nats合并到nat entry set脏缓存中
 		}
 

@@ -82,15 +82,17 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 #define SEGMENT_SIZE(sbi)	(1ULL << ((sbi)->log_blocksize +	\
 					(sbi)->log_blocks_per_seg))
 
+// 段在ssd上的首地址
 #define START_BLOCK(sbi, segno)	(SEG0_BLKADDR(sbi) +			\
 	 (GET_R2L_SEGNO(FREE_I(sbi), segno) << (sbi)->log_blocks_per_seg))
 
 #define NEXT_FREE_BLKADDR(sbi, curseg)					\
 	(START_BLOCK(sbi, (curseg)->segno) + (curseg)->next_blkoff)
-
+// blk_addr距segment0的偏移
 #define GET_SEGOFF_FROM_SEG0(sbi, blk_addr)	((blk_addr) - SEG0_BLKADDR(sbi))
 #define GET_SEGNO_FROM_SEG0(sbi, blk_addr)				\
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) >> (sbi)->log_blocks_per_seg)
+// blk_addr在段内的偏移
 #define GET_BLKOFF_FROM_SEG0(sbi, blk_addr)				\
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) & ((sbi)->blocks_per_seg - 1))
 
@@ -217,7 +219,7 @@ struct seg_entry {
 	 * # of valid blocks and the validity bitmap stored in the last
 	 * checkpoint pack. This information is used by the SSR mode.
 	 */
-	unsigned char *ckpt_valid_map;	/* validity bitmap of blocks last cp */
+	unsigned char *ckpt_valid_map;	/* validity bitmap of blocks last cp // checkpoint后，cur_valid_map设为ckpt_valid_map */
 	unsigned char *discard_map;
 	unsigned long long mtime;	/* modification time of the segment */
 };
@@ -264,6 +266,7 @@ struct sit_info {
 
 	/* for sit on pm */
 	unsigned long *pm_sentries_bitmap;
+	/* for sum on pm */
 	unsigned long *pm_summary_bitmap;
 
 	/* for cost-benefit algorithm in cleaning procedure */

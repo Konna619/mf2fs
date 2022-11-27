@@ -17,6 +17,7 @@
 #include <linux/sched/signal.h>
 #include <linux/libnvdimm.h>	//konna arch_wb_cache_pmem
 #include <linux/mm.h>			//konna	virt_to_page()
+#include <linux/page_ref.h>		//konna for debug
 
 #include "f2fs.h"
 #include "segment.h"
@@ -2361,6 +2362,7 @@ bool f2fs_is_checkpointed_data(struct f2fs_sb_info *sbi, block_t blkaddr)
 
 /*
  * This function should be resided under the curseg_mutex lock
+ * 写当前段的sum块
  */
 static void __add_sum_entry(struct f2fs_sb_info *sbi, int type,
 					struct f2fs_summary *sum)
@@ -2373,6 +2375,7 @@ static void __add_sum_entry(struct f2fs_sb_info *sbi, int type,
 
 /*
  * Calculate the number of current summary pages for writing
+ * 计算cp区域写压缩的data sum需要多少页
  */
 int f2fs_npages_for_summary_flush(struct f2fs_sb_info *sbi, bool for_ra)
 {
@@ -2410,7 +2413,8 @@ struct page *f2fs_get_sum_page(struct f2fs_sb_info *sbi, unsigned int segno)
 {
 	if (unlikely(f2fs_cp_error(sbi)))
 		return ERR_PTR(-EIO);
-	return f2fs_get_meta_page_retry(sbi, GET_SUM_BLOCK(sbi, segno));
+	// return f2fs_get_meta_page_retry(sbi, GET_SUM_BLOCK(sbi, segno));
+	return f2fs_get_meta_page_retry_on_pm(sbi, GET_SUM_BLOCK(sbi, segno));
 }
 
 void f2fs_update_meta_page(struct f2fs_sb_info *sbi,
@@ -2424,28 +2428,40 @@ void f2fs_update_meta_page(struct f2fs_sb_info *sbi,
 }
 
 // konna
-void f2fs_update_meta_page_on_pm(struct f2fs_sb_info *sbi,
-					void *src, block_t blk_addr)
+// 关键函数：用于更新sum页，仅将src写入页缓存，引用计数加一，防止释放；不置脏，防止下刷
+// 更新pm_summary_bitmap位图，在cp时用于将sum page下刷到pm并清零
+static void f2fs_update_sum_page_on_pm(struct f2fs_sb_info *sbi,
+					void *src, block_t blk_addr, unsigned int segno)
 {
-	// void *dst = PM_I(sbi)->p_va_start + ((unsigned long long)blk_addr<<PAGE_SIZE);
-
-	// memcpy(dst, src, PAGE_SIZE);
-	// arch_wb_cache_pmem(dst, PAGE_SIZE);
-
-	struct page *page = f2fs_grab_meta_page(sbi, blk_addr);
-
+	struct page *page = f2fs_grab_cache_page(META_MAPPING(sbi), blk_addr, false);
+	//f2fs_info(sbi, "get sum page for seg : %u", segno);
 	memcpy(page_address(page), src, PAGE_SIZE);
+	if(!test_and_set_bit(segno, SIT_I(sbi)->pm_summary_bitmap)){
+		get_page(page);
+		//f2fs_info(sbi,"sum page for seg : %u ref : %d", segno, page_ref_count(page));
+	}
 	// set_page_dirty(page);
 	f2fs_put_page(page, 1);
 }
 
+// 不再使用
+#if 0
 static void write_sum_page(struct f2fs_sb_info *sbi,
 			struct f2fs_summary_block *sum_blk, block_t blk_addr)
 {
 	f2fs_update_meta_page(sbi, (void *)sum_blk, blk_addr);
-	// f2fs_update_meta_page_on_pm(sbi, (void *)sum_blk, blk_addr);
+}
+#endif
+
+// konna
+// 关键修改：将f2fs_update_meta_page替换为f2fs_update_sum_page_on_pm
+static void write_sum_page_on_pm(struct f2fs_sb_info *sbi,
+			struct f2fs_summary_block *sum_blk, block_t blk_addr, unsigned int segno)
+{
+	f2fs_update_sum_page_on_pm(sbi, (void *)sum_blk, blk_addr, segno);
 }
 
+// 用于cp
 static void write_current_sum_page(struct f2fs_sb_info *sbi,
 						int type, block_t blk_addr)
 {
@@ -2646,9 +2662,12 @@ static void new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 	unsigned int segno = curseg->segno;
 	int dir = ALLOC_LEFT;
 
+	// if (curseg->inited)
+	// 	write_sum_page(sbi, curseg->sum_blk,
+	// 			GET_SUM_BLOCK(sbi, segno));// 写summary块
 	if (curseg->inited)
-		write_sum_page(sbi, curseg->sum_blk,
-				GET_SUM_BLOCK(sbi, segno));// 写summary块
+		write_sum_page_on_pm(sbi, curseg->sum_blk,
+				GET_SUM_BLOCK(sbi, segno), segno);// 写summary块
 	if (seg_type == CURSEG_WARM_DATA || seg_type == CURSEG_COLD_DATA)
 		dir = ALLOC_RIGHT;
 
@@ -2708,9 +2727,12 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type, bool flush)
 	struct f2fs_summary_block *sum_node;
 	struct page *sum_page;
 
+	// if (flush)
+	// 	write_sum_page(sbi, curseg->sum_blk,
+	// 				GET_SUM_BLOCK(sbi, curseg->segno));
 	if (flush)
-		write_sum_page(sbi, curseg->sum_blk,
-					GET_SUM_BLOCK(sbi, curseg->segno));
+		write_sum_page_on_pm(sbi, curseg->sum_blk,
+					GET_SUM_BLOCK(sbi, curseg->segno), curseg->segno);
 
 	__set_test_and_inuse(sbi, new_segno);
 
@@ -2793,8 +2815,10 @@ static void __f2fs_save_inmem_curseg(struct f2fs_sb_info *sbi, int type)
 		goto out;
 
 	if (get_valid_blocks(sbi, curseg->segno, false)) {
-		write_sum_page(sbi, curseg->sum_blk,
-				GET_SUM_BLOCK(sbi, curseg->segno));
+		// write_sum_page(sbi, curseg->sum_blk,
+		// 		GET_SUM_BLOCK(sbi, curseg->segno));
+		write_sum_page_on_pm(sbi, curseg->sum_blk,
+				GET_SUM_BLOCK(sbi, curseg->segno), curseg->segno);
 	} else {
 		mutex_lock(&DIRTY_I(sbi)->seglist_lock);
 		__set_test_and_free(sbi, curseg->segno, true);
@@ -2898,7 +2922,7 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type,
 /*
  * flush out current segment and replace it with new segment
  * This function should be returned with success, otherwise BUG
- * 将当前段下刷并，分配一个新段
+ * 将当前段下，并分配一个新段
  */
 static void allocate_segment_by_default(struct f2fs_sb_info *sbi,
 						int type, bool force)
@@ -3128,7 +3152,6 @@ int f2fs_trim_fs(struct f2fs_sb_info *sbi, struct fstrim_range *range)
 		goto out;
 
 	down_write(&sbi->gc_lock);
-	//f2fs_info(sbi, "trim_fs write checkpoint");
 	err = f2fs_write_checkpoint(sbi, &cpc);
 	up_write(&sbi->gc_lock);
 	if (err)
@@ -3858,7 +3881,7 @@ static int read_normal_summaries(struct f2fs_sb_info *sbi, int type)
 				ns->ofs_in_node = 0;
 			}
 		} else {
-			err = f2fs_restore_node_summary(sbi, segno, sum);
+			err = f2fs_restore_node_summary(sbi, segno, sum);//cp区域没有NODE段的sum，就去读NODE段的所有页来恢复sum
 			if (err)
 				goto out;
 		}
@@ -3885,6 +3908,7 @@ out:
 	return err;
 }
 
+// 挂载时恢复当前段的summary和journal
 static int restore_curseg_summaries(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_journal *sit_j = CURSEG_I(sbi, CURSEG_COLD_DATA)->journal;
@@ -3987,6 +4011,7 @@ static void write_compacted_summaries(struct f2fs_sb_info *sbi, block_t blkaddr)
 }
 
 // 仅用于写当前段的SSA
+// 仅在checkpoint时写到cp区域使用
 static void write_normal_summaries(struct f2fs_sb_info *sbi,
 					block_t blkaddr, int type)
 {
@@ -4001,6 +4026,7 @@ static void write_normal_summaries(struct f2fs_sb_info *sbi,
 }
 
 // 写压缩的或未压缩的当前DATA段的SSA
+// 仅在checkpoint时写到cp区域使用
 void f2fs_write_data_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 {
 	if (is_set_ckpt_flags(sbi, CP_COMPACT_SUM_FLAG))
@@ -4010,6 +4036,7 @@ void f2fs_write_data_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 }
 
 // 写当前NODE段的SSA
+// 仅在checkpoint时写到cp区域使用
 void f2fs_write_node_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 {
 	write_normal_summaries(sbi, start_blk, CURSEG_HOT_NODE);
@@ -4039,13 +4066,14 @@ int f2fs_lookup_journal_in_cursum(struct f2fs_journal *journal, int type,
 	return -1;
 }
 
+// 仅用于挂载时读ssd上的sit表
 static struct page *get_current_sit_page(struct f2fs_sb_info *sbi,
 					unsigned int segno)
 {
 	return f2fs_get_meta_page(sbi, current_sit_addr(sbi, segno));
 }
 
-// 获得当前要写的块并填充，
+// 获得当前要写的块并填充。仅操作page cache
 static struct page *get_next_sit_page(struct f2fs_sb_info *sbi,
 					unsigned int start)
 {
@@ -4106,6 +4134,7 @@ static void add_sit_entry(unsigned int segno, struct list_head *head)
 	list_for_each_entry(ses, head, set_list) {
 		if (ses->start_segno == start_segno) {
 			ses->entry_cnt++;
+			// printk( "ses entries count : %u\n", ses->entry_cnt);
 			adjust_sit_entry_set(ses, head);
 			return;
 		}
@@ -4118,6 +4147,7 @@ static void add_sit_entry(unsigned int segno, struct list_head *head)
 	list_add(&ses->set_list, head);
 }
 
+// 将dirty_sentries_bitmap中标记的segno加入到对应set中（实际上只是set数量加一）
 // 计算每个sit块的脏entry数量
 static void add_sits_in_set(struct f2fs_sb_info *sbi)
 {
@@ -4126,29 +4156,11 @@ static void add_sits_in_set(struct f2fs_sb_info *sbi)
 	unsigned long *bitmap = SIT_I(sbi)->dirty_sentries_bitmap;
 	unsigned int segno;
 
-	for_each_set_bit(segno, bitmap, MAIN_SEGS(sbi))
+	for_each_set_bit(segno, bitmap, MAIN_SEGS(sbi)){
 		add_sit_entry(segno, set_list);
+		// f2fs_err(sbi, "%s add sit entry : %u",__func__, segno);
+	}
 }
-
-// umount时，下刷pm中的sit entries
-// static void add_sits_in_set_umount(struct f2fs_sb_info *sbi)
-// {
-// 	struct f2fs_sm_info *sm_info = SM_I(sbi);
-// 	struct list_head *set_list = &sm_info->sit_entry_set;
-// 	unsigned int main_bitmap_size = f2fs_bitmap_size(MAIN_SEGS(sbi));
-// 	unsigned long *bitmap = SIT_I(sbi)->dirty_sentries_bitmap;
-// 	unsigned long *pm_bitmap = SIT_I(sbi)->pm_sentries_bitmap;
-// 	unsigned long *ssd_bitmap = f2fs_kvzalloc(sbi, main_bitmap_size,
-// 								GFP_KERNEL);
-// 	unsigned int segno;
-
-// 	bitmap_or(ssd_bitmap, bitmap, pm_bitmap, main_bitmap_size);
-
-// 	for_each_set_bit(segno, ssd_bitmap, MAIN_SEGS(sbi))
-// 		add_sit_entry(segno, set_list);
-
-// 	kvfree(ssd_bitmap);
-// }
 
 static void remove_sits_in_journal(struct f2fs_sb_info *sbi)
 {
@@ -4164,14 +4176,17 @@ static void remove_sits_in_journal(struct f2fs_sb_info *sbi)
 		segno = le32_to_cpu(segno_in_journal(journal, i));
 		dirtied = __mark_sit_entry_dirty(sbi, segno);
 
-		if (!dirtied)
+		if (!dirtied){
 			add_sit_entry(segno, &SM_I(sbi)->sit_entry_set);
+			// f2fs_err(sbi, "%s add sit entry : %u",__func__, segno);
+		}
 	}
 	update_sits_in_cursum(journal, -i);
 	up_write(&curseg->journal_rwsem);
 }
 
-// 下刷内存中下刷到pm中的sit
+// konna
+// 将pm中的sit加到脏set
 static void remove_sits_in_pm(struct f2fs_sb_info *sbi)
 {
 	unsigned long *pm_bitmap = SIT_I(sbi)->pm_sentries_bitmap;
@@ -4180,28 +4195,22 @@ static void remove_sits_in_pm(struct f2fs_sb_info *sbi)
 	int segno;
 
 	for_each_set_bit(segno, pm_bitmap, MAIN_SEGS(sbi)){
-		bool dirtied;
+		// bool dirtied;
 
-		dirtied = __mark_sit_entry_dirty(sbi, segno);
+		__mark_sit_entry_dirty(sbi, segno);
 
-		if (!dirtied)
-			add_sit_entry(segno, set_list);
+		// if (!dirtied){
+		// 	add_sit_entry(segno, set_list);
+		// 	f2fs_err(sbi, "%s add sit entry : %u",__func__, segno);
+		// }
 	}
 }
-
-// static void f2fs_write_sit_to_pm(struct seg_entry *se, unsigned int segno){
-
-// 	//f2fs_info(sbi,"wirte nid %u to addr %llx",nid,(unsigned long long)vaddr);
-// 	if(__copy_from_user_inatomic(vaddr, (void *)ni, NAT_NVM_SIZE)){
-// 		f2fs_err(sbi, "write nat on nvm failed! nid:%u", ni->nid);
-// 	}
-// 	//f2fs_info(sbi,"after write blk_addr on pm :%u", ni->blk_addr);
-
-// }
 
 /*
  * CP calls this function, which flushes SIT entries including sit_journal,
  * and moves prefree segs to free segs.
+ * konna
+ * 关键修改：非umount时写入journal或pm；umount时写入journal或ssd
  */
 void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
@@ -4217,6 +4226,13 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	struct seg_entry *se;
 
 	down_write(&sit_i->sentry_lock);
+	
+	// 如果不是umount，将脏sit都写入pm上；如果是umount，将pm上的sit都加入到脏set中
+	if(!is_set_cpc_flag(cpc, CP_UMOUNT)){
+		to_pm = true;
+	} else {
+		remove_sits_in_pm(sbi);
+	}
 
 	if (!sit_i->dirty_sentries)// 有无脏sit entry
 		goto out;
@@ -4236,11 +4252,7 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 								!to_journal)
 		remove_sits_in_journal(sbi);// journal空间不够就删除
 
-	if(!is_set_cpc_flag(cpc, CP_UMOUNT)){
-		to_pm = true;
-	} else {
-		remove_sits_in_pm(sbi);
-	}
+	
 	/*
 	 * there are two steps to flush sit entries:
 	 * #1, flush sit entries to journal in current cold data summary block.
@@ -4316,18 +4328,26 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 			ses->entry_cnt--;
 		}
 
-		if (to_journal)
+		if (to_journal){
+			f2fs_err(sbi,"write sit page to journal %lu", current_sit_addr(sbi, start_segno));
 			up_write(&curseg->journal_rwsem);
+		}
 		else if(to_pm){
+			f2fs_err(sbi,"write sit page to pm %lu", current_sit_addr(sbi, start_segno));
 			arch_wb_cache_pmem(raw_sit, F2FS_BLKSIZE);
-		} else 
+		} else {
+			f2fs_err(sbi,"write sit page to ssd %lu", current_sit_addr(sbi, start_segno));
 			f2fs_put_page(page, 1);
+		}
 
+		// f2fs_err(sbi, "bug here1");
 		f2fs_bug_on(sbi, ses->entry_cnt);
+		// f2fs_err(sbi, "%s ses entries count : %u",__func__, ses->entry_cnt);
 		release_sit_entry_set(ses);// 释放所有的set
 	}
-
+	// f2fs_err(sbi, "bug here2");
 	f2fs_bug_on(sbi, !list_empty(head));
+	// f2fs_err(sbi, "bug here3");
 	f2fs_bug_on(sbi, sit_i->dirty_sentries);
 out:
 	if (cpc->reason & CP_DISCARD) {
@@ -4343,6 +4363,8 @@ out:
 	set_prefree_as_free_segments(sbi);// 将dirty_seglist_info中所有的PRE段加到free_segmap_info中
 }
 
+// konna
+// 关键修改：添加了两种位图用于下刷sit到ssd，sum到pm
 static int build_sit_info(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_super_block *raw_super = F2FS_RAW_SUPER(sbi);
@@ -4350,6 +4372,7 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 	unsigned int sit_segs, start;
 	char *src_bitmap, *bitmap;
 	unsigned int bitmap_size, main_bitmap_size, sit_bitmap_size;
+	unsigned int total_bitmap_size;	//konna
 
 	/* allocate memory for SIT information */
 	sit_i = f2fs_kzalloc(sbi, sizeof(struct sit_info), GFP_KERNEL);
@@ -4371,10 +4394,17 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 	if (!sit_i->dirty_sentries_bitmap)
 		return -ENOMEM;
 
-	// konna
+	// konna : for flush sit entries in pm to ssd when umount
 	sit_i->pm_sentries_bitmap = f2fs_kvzalloc(sbi, main_bitmap_size,
 								GFP_KERNEL);
 	if (!sit_i->pm_sentries_bitmap)
+		return -ENOMEM;
+	
+	// konna : for flush summary block in dram to pm when checkpoint
+	total_bitmap_size = f2fs_bitmap_size(TOTAL_SEGS(sbi));
+	sit_i->pm_summary_bitmap = f2fs_kvzalloc(sbi, total_bitmap_size,
+								GFP_KERNEL);
+	if (!sit_i->pm_summary_bitmap)
 		return -ENOMEM;
 
 #ifdef CONFIG_F2FS_CHECK_FS
@@ -5352,6 +5382,7 @@ static void destroy_sit_info(struct f2fs_sb_info *sbi)
 	kvfree(sit_i->sec_entries);
 	kvfree(sit_i->dirty_sentries_bitmap);
 	kvfree(sit_i->pm_sentries_bitmap);//konna
+	kvfree(sit_i->pm_summary_bitmap);//konna
 
 	SM_I(sbi)->sit_info = NULL;
 	kvfree(sit_i->sit_bitmap);

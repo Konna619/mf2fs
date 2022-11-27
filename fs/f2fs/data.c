@@ -694,6 +694,7 @@ void f2fs_flush_merged_writes(struct f2fs_sb_info *sbi)
 /*
  * Fill the locked page with data located in the block address.
  * A caller needs to unlock the page on failure.
+ * IO完成后仅解锁page
  */
 int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 {
