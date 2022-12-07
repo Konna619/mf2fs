@@ -903,8 +903,10 @@ next_step:
 			continue;
 
 		if (phase == 0) {
-			f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), 1,
-							META_NAT, true);
+			// f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), 1,
+			// 				META_NAT, true);
+			f2fs_ra_meta_pages_on_pm(sbi, NAT_BLOCK_OFFSET(nid), 1,
+							META_NAT);
 			continue;
 		}
 
@@ -1410,8 +1412,10 @@ next_step:
 			continue;
 
 		if (phase == 0) {
-			f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), 1,
-							META_NAT, true);
+			// f2fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), 1,
+			// 				META_NAT, true);
+			f2fs_ra_meta_pages_on_pm(sbi, NAT_BLOCK_OFFSET(nid), 1,
+							META_NAT);
 			continue;
 		}
 
@@ -1565,9 +1569,12 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 	sanity_check_seg_type(sbi, get_seg_entry(sbi, segno)->type);
 
 	/* readahead multi ssa blocks those have contiguous address */
-	if (__is_large_section(sbi))
-		f2fs_ra_meta_pages(sbi, GET_SUM_BLOCK(sbi, segno),
-					end_segno - segno, META_SSA, true);
+	if (__is_large_section(sbi)){
+		// f2fs_ra_meta_pages(sbi, GET_SUM_BLOCK(sbi, segno),
+		// 			end_segno - segno, META_SSA, true);
+		f2fs_ra_meta_pages_on_pm(sbi, GET_SUM_BLOCK(sbi, segno),
+					end_segno - segno, META_SSA);
+	}
 
 	/* reference all summary page */
 	while (segno < end_segno) {

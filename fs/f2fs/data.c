@@ -940,7 +940,7 @@ alloc_new:
 	return 0;
 }
 
-// 真正写页
+// 真正写页，调用前加锁并get_page，调用后解锁并put_page
 void f2fs_submit_page_write(struct f2fs_io_info *fio)
 {
 	struct f2fs_sb_info *sbi = fio->sbi;
@@ -1133,7 +1133,7 @@ void f2fs_update_data_blkaddr(struct dnode_of_data *dn, block_t blkaddr)
 {
 	dn->data_blkaddr = blkaddr;
 	f2fs_set_data_blkaddr(dn);
-	f2fs_update_extent_cache(dn);
+	f2fs_update_extent_cache(dn);// 这里需要注意
 }
 
 /* dn->ofs_in_node will be returned with up-to-date last block pointer */
@@ -1457,7 +1457,7 @@ int f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *from)
 		map.m_seg_type = f2fs_rw_hint_to_seg_type(iocb->ki_hint);
 		flag = f2fs_force_buffered_io(inode, iocb, from) ?
 					F2FS_GET_BLOCK_PRE_AIO :
-					F2FS_GET_BLOCK_PRE_DIO;
+					F2FS_GET_BLOCK_PRE_DIO;		// zbd返回true，F2FS_GET_BLOCK_PRE_AIO
 		goto map_blocks;
 	}
 	if (iocb->ki_pos + iov_iter_count(from) > MAX_INLINE_DATA(inode)) {
@@ -2459,10 +2459,10 @@ static int f2fs_read_data_page(struct file *file, struct page *page)
 
 	/* If the file has inline data, try to read it directly */
 	if (f2fs_has_inline_data(inode)){
-		printk("file inode:%lu has inline data", inode->i_ino);
+		// printk("file inode:%lu has inline data", inode->i_ino);
 		ret = f2fs_read_inline_data(inode, page);
 	}else{
-		printk("file inode:%lu has no inline data", inode->i_ino);
+		// printk("file inode:%lu has no inline data", inode->i_ino);
 	}
 	if (ret == -EAGAIN)
 		ret = f2fs_mpage_readpages(inode, NULL, page);

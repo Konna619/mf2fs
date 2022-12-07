@@ -25,6 +25,7 @@
 #include "gc.h"
 #include "trace.h"
 #include <trace/events/f2fs.h>
+#include "balloc.h"
 
 #define __reverse_ffz(x) __reverse_ffs(~(x))
 
@@ -2313,6 +2314,7 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 		get_sec_entry(sbi, segno)->valid_blocks += del;
 }
 
+// 将addr块设为无效，并修改对应段的sit entry
 void f2fs_invalidate_blocks(struct f2fs_sb_info *sbi, block_t addr)
 {
 	unsigned int segno = GET_SEGNO(sbi, addr);
@@ -3451,7 +3453,7 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	up_write(&sit_i->sentry_lock);
 
 	if (page && IS_NODESEG(type)) {
-		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));// 更新node页的footer的cp_var和next_blkaddr
+		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));// 更新node页的footer的cp_var和next_blkaddr，用于恢复数据
 
 		f2fs_inode_chksum_set(sbi, page);// 更新f2fs_inode的i_inode_checksum
 	}
@@ -3502,15 +3504,19 @@ static void do_write_page(struct f2fs_summary *sum, struct f2fs_io_info *fio)
 {
 	int type = __get_segment_type(fio);// 判断段类型
 	bool keep_order = (f2fs_lfs_mode(fio->sbi) && type == CURSEG_COLD_DATA);
+	int nr_invlid;
 
 	if (keep_order)
 		down_read(&fio->sbi->io_order_lock);
 reallocate:
 	f2fs_allocate_data_block(fio->sbi, fio->page, fio->old_blkaddr,
 			&fio->new_blkaddr, sum, type, fio);// 在当前的段中分配页
-	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO)
-		invalidate_mapping_pages(META_MAPPING(fio->sbi),
-					fio->old_blkaddr, fio->old_blkaddr);// 在mapping中将old_blkaddr对应的页设为无效？
+	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO){
+
+		nr_invlid = invalidate_mapping_pages(META_MAPPING(fio->sbi),
+					fio->old_blkaddr, fio->old_blkaddr);// 在mapping中将old_blkaddr对应的页设为无效？没啥用
+		// printk("do_write_page has invalidate %d pages\n", nr_invlid);
+	}
 
 	/* writeout dirty page into bdev */
 	f2fs_submit_page_write(fio);// 真正写页
@@ -3519,10 +3525,75 @@ reallocate:
 		goto reallocate;
 	}
 
-	update_device_state(fio);
+	update_device_state(fio);// 将设备设为脏
 
 	if (keep_order)
 		up_read(&fio->sbi->io_order_lock);
+}
+
+// 往pm中写page, 成功返回0，失败返回-ENOSPC；并清除了page的dirty标志
+static int do_write_page_pm(struct f2fs_io_info *fio, bool from_pm, bool *node_page_changed)
+{
+	struct f2fs_sb_info * sbi = fio->sbi;
+	struct sit_info *sit_i = SIT_I(sbi);
+
+	/* konna *****************************************************************/
+	unsigned long blocknr = 0;
+	int allocated = 0;
+	unsigned long old_blkaddr = fio->old_blkaddr;
+	void * dest_addr;
+	int ret;
+
+	allocated = f2fs_new_blocks(sbi->sb, &blocknr, 1, 0, 0, NODE_PM, ALLOC_FROM_HEAD);
+	if(!allocated){
+		printk("PM has no more space for node page!\n");
+		if(!from_pm){// 从ssd写入ssd
+			// goto traditional_wirte_node_page;
+			return -ENOSPC;
+		} else {// 从pm写入ssd，释放pm上的块，将fio的old_blkaddr设为NEW_ADDR
+			f2fs_free_blocks(sbi->sb, old_blkaddr, 1, true);
+			fio->old_blkaddr = NEW_ADDR;
+			// goto traditional_wirte_node_page;
+			*node_page_changed = true;
+			//f2fs_err(sbi, "node page device changed!");
+			return -ENOSPC;
+		}
+	} else {
+		//printk("alloc blkaddr=%lu from pm!\n", blocknr);
+		if(!from_pm){// 从ssd写入pm，释放ssd上的旧块
+			down_write(&sit_i->sentry_lock);
+			update_segment_mtime(sbi, old_blkaddr, 0);
+			if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
+				update_sit_entry(sbi, old_blkaddr, -1);
+			locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
+			up_write(&sit_i->sentry_lock);
+			*node_page_changed = true;
+			//f2fs_err(sbi, "node page device changed!");
+		} else {// 从pm写入pm，释放pm上的旧块
+			f2fs_free_blocks(sbi->sb, old_blkaddr, 1, true);//释放旧块
+			//f2fs_err(sbi, "free pm block=%lu", old_blkaddr);
+		}
+		if(fio->page){
+			f2fs_inode_chksum_set(sbi, fio->page);
+		}
+		// 写入pm
+		dest_addr = PM_I(sbi)->p_va_start + ((u64)blocknr<<PAGE_SHIFT);
+		ret = __copy_from_user_inatomic_nocache(dest_addr, page_address(fio->page), PAGE_SIZE);
+		fio->new_blkaddr = blocknr;
+		if(ret){
+			WARN_ON(1);
+			f2fs_free_blocks(sbi->sb, blocknr, 1, true);
+			fio->old_blkaddr = NEW_ADDR;
+			// goto traditional_wirte_node_page;
+			return -ENOSPC;
+		}
+		ClearPageDirty(fio->page);
+		return 0;
+	}
+
+	return -ENOSPC;
+
+	/* konna *****************************************************************/
 }
 
 // 写meta页
@@ -3553,7 +3624,7 @@ void f2fs_do_write_meta_page(struct f2fs_sb_info *sbi, struct page *page,
 	f2fs_update_iostat(sbi, io_type, F2FS_BLKSIZE);
 }
 
-// 写node页
+// 写node页，fio中的page已加锁并get
 void f2fs_do_write_node_page(unsigned int nid, struct f2fs_io_info *fio)
 {
 	struct f2fs_summary sum;
@@ -3562,6 +3633,20 @@ void f2fs_do_write_node_page(unsigned int nid, struct f2fs_io_info *fio)
 	do_write_page(&sum, fio);
 
 	f2fs_update_iostat(fio->sbi, fio->io_type, F2FS_BLKSIZE);
+}
+
+// 写node页
+int f2fs_do_write_node_page_on_pm(struct f2fs_io_info *fio, bool from_pm, bool *node_page_changed)
+{
+	struct f2fs_summary sum;
+	int ret;
+
+	set_summary(&sum, nid, 0, 0);
+	ret = do_write_page_pm(fio, from_pm, node_page_changed);
+	if(!ret)
+		f2fs_update_iostat(fio->sbi, fio->io_type, F2FS_BLKSIZE);
+
+	return ret;
 }
 
 // out place写数据页
@@ -4190,8 +4275,8 @@ static void remove_sits_in_journal(struct f2fs_sb_info *sbi)
 static void remove_sits_in_pm(struct f2fs_sb_info *sbi)
 {
 	unsigned long *pm_bitmap = SIT_I(sbi)->pm_sentries_bitmap;
-	struct f2fs_sm_info *sm_info = SM_I(sbi);
-	struct list_head *set_list = &sm_info->sit_entry_set;
+	// struct f2fs_sm_info *sm_info = SM_I(sbi);
+	// struct list_head *set_list = &sm_info->sit_entry_set;
 	int segno;
 
 	for_each_set_bit(segno, pm_bitmap, MAIN_SEGS(sbi)){
@@ -4329,14 +4414,14 @@ void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		}
 
 		if (to_journal){
-			f2fs_err(sbi,"write sit page to journal %lu", current_sit_addr(sbi, start_segno));
+			//f2fs_err(sbi,"write sit page to journal %lu", current_sit_addr(sbi, start_segno));
 			up_write(&curseg->journal_rwsem);
 		}
 		else if(to_pm){
-			f2fs_err(sbi,"write sit page to pm %lu", current_sit_addr(sbi, start_segno));
+			//f2fs_err(sbi,"write sit page to pm %lu", current_sit_addr(sbi, start_segno));
 			arch_wb_cache_pmem(raw_sit, F2FS_BLKSIZE);
 		} else {
-			f2fs_err(sbi,"write sit page to ssd %lu", current_sit_addr(sbi, start_segno));
+			//f2fs_err(sbi,"write sit page to ssd %lu", current_sit_addr(sbi, start_segno));
 			f2fs_put_page(page, 1);
 		}
 
@@ -4406,6 +4491,11 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 								GFP_KERNEL);
 	if (!sit_i->pm_summary_bitmap)
 		return -ENOMEM;
+	
+	// konna : for data block bitmap on pm
+	// TODO
+	
+	// konna : for build node page bitmap
 
 #ifdef CONFIG_F2FS_CHECK_FS
 	bitmap_size = MAIN_SEGS(sbi) * SIT_VBLOCK_MAP_SIZE * 4;
@@ -4656,6 +4746,9 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 		}
 	}
 	up_read(&curseg->journal_rwsem);
+
+	//konna
+	total_node_blocks += PM_S(sbi)->valid_node_blk_count;
 
 	if (!err && total_node_blocks != valid_node_count(sbi)) {
 		f2fs_err(sbi, "SIT is corrupted node# %u vs %u",

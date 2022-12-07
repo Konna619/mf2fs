@@ -56,42 +56,45 @@ struct free_list {
 	struct f2fs_range_node *first_node; // lowest address free range
 	struct f2fs_range_node *last_node; // highest address free range
 
-	int		index; // Which CPU do I belong to?
+	//int		index; // Which CPU do I belong to?
 
 	/* Where are the data checksum blocks */
-	unsigned long	csum_start;
-	unsigned long	replica_csum_start;
-	unsigned long	num_csum_blocks;
+	// unsigned long	csum_start;
+	// unsigned long	replica_csum_start;
+	// unsigned long	num_csum_blocks;
 
 	/* Where are the data parity blocks */
-	unsigned long	parity_start;
-	unsigned long	replica_parity_start;
-	unsigned long	num_parity_blocks;
+	// unsigned long	parity_start;
+	// unsigned long	replica_parity_start;
+	// unsigned long	num_parity_blocks;
 
 	/* Start and end of allocatable range, inclusive. Excludes csum and
 	 * parity blocks.
 	 */
-	unsigned long	block_start;
-	unsigned long	block_end;
+	unsigned long	block_start;	//f2fs_init_free_list
+	unsigned long	block_end;		//f2fs_init_free_list
 
-	unsigned long	num_free_blocks;
+	unsigned long	nr_blocks;		//f2fs_init_free_list
+	unsigned long	num_free_blocks;		//f2fs_init_free_list && f2fs_init_blockmap
+	unsigned long * free_blocks_bitmap;		//f2fs_init_blockmap
+	unsigned int free_block_bitmap_pages;	//f2fs_init_free_list
 
 	/* How many nodes in the rb tree? */
-	unsigned long	num_blocknode;
+	unsigned long	num_blocknode;			//f2fs_init_free_list && f2fs_init_blockmap
 
-	u32		csum;		/* Protect integrity */
+	// u32		csum;		/* Protect integrity */
 
 	/* Statistics */
-	unsigned long	alloc_log_count;
-	unsigned long	alloc_data_count;
-	unsigned long	free_log_count;
-	unsigned long	free_data_count;
-	unsigned long	alloc_log_pages;
+	// unsigned long	alloc_log_count;
+	// unsigned long	alloc_data_count;
+	// unsigned long	free_log_count;
+	// unsigned long	free_data_count;
+	unsigned long	alloc_node_pages;
 	unsigned long	alloc_data_pages;
-	unsigned long	freed_log_pages;
+	unsigned long	freed_node_pages;
 	unsigned long	freed_data_pages;
 
-	u64		padding[8];	/* Cache line break */
+	// u64		padding[8];	/* Cache line break */
 };
 
 static inline
@@ -111,6 +114,7 @@ enum nova_alloc_init {ALLOC_NO_INIT = 0,
 enum alloc_type {
 	LOG = 1,
 	DATA_NOVA,
+	NODE_PM,
 };
 
 
@@ -142,7 +146,7 @@ void nova_free_vma_item(struct super_block *sb,
 	struct vma_item *item);
 */
 int f2fs_init_blockmap(struct f2fs_sb_info *sbi, int recovery);
-extern int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num);
+extern int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num, bool is_node);
 /*
 extern int nova_free_data_blocks(struct super_block *sb,
 	struct nova_inode_info_header *sih, unsigned long blocknr, int num);

@@ -38,6 +38,7 @@ int f2fs_alloc_block_free_lists(struct f2fs_sb_info *sbi){
 	struct free_list *free_list;
 
 	sbi->free_list = kcalloc(1, sizeof(struct free_list), GFP_KERNEL);
+	printk("free_lits size=%ld", sizeof(struct free_list));
 
 	if(!sbi->free_list)
 		return -ENOMEM;
@@ -45,11 +46,11 @@ int f2fs_alloc_block_free_lists(struct f2fs_sb_info *sbi){
 	free_list = sbi->free_list;
 	free_list->block_free_tree = RB_ROOT;
 	spin_lock_init(&free_list->s_lock);
-	free_list->index = 0;
+	//free_list->index = 0;
 
 	//spin_lock_init(&sbi->nvm_lock);
-	sbi->curr_block=0;
-	sbi->curr_offset=0;
+	// sbi->curr_block=0;
+	// sbi->curr_offset=0;
 
 	return 0;
 }
@@ -57,6 +58,7 @@ int f2fs_alloc_block_free_lists(struct f2fs_sb_info *sbi){
 // 释放freelist
 void f2fs_delete_free_lists(struct f2fs_sb_info *sbi){
 
+	kvfree(sbi->free_list->free_blocks_bitmap);
 	kfree(sbi->free_list);
 	sbi->free_list = NULL;
 }
@@ -64,17 +66,16 @@ void f2fs_delete_free_lists(struct f2fs_sb_info *sbi){
 // 初始化freelist的起始块地址和末地址，留出给sb，cp，sit，nat，saa的空间
 static void f2fs_init_free_list(struct f2fs_sb_info *sbi, struct free_list *free_list, int index){
 
-	struct f2fs_pm_info *pm_info = &sbi->pm_info;
-	unsigned long per_list_blocks;
-	struct f2fs_sm_info *sm_info = sbi->sm_info;
-	block_t main_blkaddr = sm_info->main_blkaddr;
+	free_list->nr_blocks = PM_S(sbi)->nr_blocks;
+	free_list->alloc_node_pages = PM_S(sbi)->valid_node_blk_count;
+	free_list->block_start = PM_S(sbi)->frea_area_blkaddr; // reserved for metadata
+	free_list->block_end = free_list->nr_blocks -1;
+	free_list->free_block_bitmap_pages = PM_S(sbi)->frea_area_blkaddr - PM_S(sbi)->fbb_blkaddr;
+	free_list->num_free_blocks = 0;
+	free_list->num_blocknode = 0;
+	// sbi->curr_block = free_area_blkaddr;
 
-	per_list_blocks = pm_info->p_size >> PAGE_SHIFT;
-	free_list->block_start += main_blkaddr; // reserved for metadata
-	free_list->block_end = per_list_blocks -1;
-	sbi->curr_block = main_blkaddr;
-
-	//f2fs_info(sbi, "f2fs_init_free_list: main_blkaddr = %u", main_blkaddr);
+	f2fs_info(sbi, "f2fs_init_free_list: free_area_blkaddr = %lu", free_list->block_start);
 }
 
 struct f2fs_range_node *f2fs_alloc_blocknode(){
@@ -110,6 +111,8 @@ int f2fs_init_blockmap(struct f2fs_sb_info *sbi, int recovery){
 	struct f2fs_range_node *blknode;
 	struct free_list *free_list;
 	int ret;
+	unsigned int start, end, range_start, range_end;
+	unsigned long *bitmap;
 
 	free_list = sbi->free_list;
 	tree = &(free_list->block_free_tree);
@@ -138,6 +141,27 @@ int f2fs_init_blockmap(struct f2fs_sb_info *sbi, int recovery){
 		free_list->first_node = blknode;
 		free_list->last_node = blknode;
 		free_list->num_blocknode =1;
+		free_list->free_blocks_bitmap = f2fs_kvmalloc(sbi, (free_list->free_block_bitmap_pages<<PAGE_SHIFT), GFP_KERNEL);
+		if(!free_list->free_blocks_bitmap)
+			return -ENOMEM;
+		memset(free_list->free_blocks_bitmap, 0xff, (free_list->free_block_bitmap_pages<<PAGE_SHIFT));
+	} else {
+		free_list->free_blocks_bitmap = kmemdup(PM_I(sbi)->p_free_blocks_bitmap_va_start, (free_list->free_block_bitmap_pages<<PAGE_SHIFT), GFP_KERNEL);
+		if(!free_list->free_blocks_bitmap)
+			return -ENOMEM;
+		bitmap = free_list->free_blocks_bitmap;
+		start = free_list->block_start;
+		end = free_list->nr_blocks;
+		for(range_start = start; range_start < end; range_start++){
+			range_start = find_next_bit(bitmap, end, range_start);
+			if(range_start >= end)
+				break;
+			range_end = find_next_zero_bit(bitmap, end, range_start);
+			f2fs_err(sbi, "find free blocks form %d to %u on pm", range_start, range_end-1);
+			f2fs_free_blocks(sbi->sb, range_start, range_end - range_start, false);
+			range_start = range_end;
+		}
+
 	}
 	return 0;
 }
@@ -312,8 +336,11 @@ next:
 		return -ENOSPC;
 	}
 
-	if(found == 1)
+	if(found == 1){
 		free_list->num_free_blocks -= num_blocks;
+		if(atype == NODE_PM)
+			free_list->alloc_node_pages += num_blocks;
+	}
 	else {
 		//f2fs_mgs
 		return -ENOSPC;
@@ -329,6 +356,7 @@ int f2fs_new_blocks(struct super_block *sb, unsigned long *blocknr, unsigned int
 	unsigned long num_blocks = 0;
 	unsigned long new_blocknr = 0;
 	long ret_blocks = 0;
+	int i;
 	//int retried = 0;
 	//struct timespec alloc_time;
 
@@ -342,8 +370,11 @@ int f2fs_new_blocks(struct super_block *sb, unsigned long *blocknr, unsigned int
 
 
 	if(ret_blocks > 0){
-		free_list->alloc_data_count++;
-		free_list->alloc_data_pages += ret_blocks;
+		//free_list->alloc_data_count++;
+		// free_list->alloc_data_pages += ret_blocks;
+		for(i=0; i<ret_blocks; i++){
+			clear_bit(new_blocknr+i, free_list->free_blocks_bitmap);
+		}
 	}
 
 	spin_unlock(&free_list->s_lock);
@@ -398,7 +429,7 @@ int f2fs_find_free_slot(struct rb_root *tree, unsigned long range_low, unsigned 
 	return 0;
 }
 
-int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num){
+int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num, bool is_node){
 
 	struct f2fs_sb_info *sbi = F2FS_SB(sb);
 	struct rb_root *tree;
@@ -412,6 +443,7 @@ int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num){
 	int cpuid;
 	int new_node_used = 0;
 	int ret;
+	int i;
 
 	if(num <= 0){
 			f2fs_err(sbi,  "%s ERROR: free %d", __func__, num);
@@ -489,6 +521,12 @@ int f2fs_free_blocks(struct super_block *sb, unsigned long blocknr, int num){
 
 block_found:
 	free_list->num_free_blocks += num_blocks;
+	if(is_node)
+		free_list->alloc_node_pages -= num_blocks;
+	for(i=0; i<num; i++){
+		set_bit(blocknr+i, free_list->free_blocks_bitmap);
+	}
+	//printk("free blocks from %lu to %lu on pm \n", blocknr, blocknr+num-1);
 
 out:
 	spin_unlock(&free_list->s_lock);

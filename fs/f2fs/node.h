@@ -45,7 +45,8 @@ enum {
 	HAS_LAST_FSYNC,		/* has the latest node fsync mark? */
 	IS_DIRTY,		/* this nat entry is dirty? */
 	IS_PREALLOC,		/* nat entry is preallocated */
-	ON_NVM,			/* konna node页在NVM上*/
+	ON_PM,			/* konna node页在NVM上*/
+	DEVICE_CHECKED,	/* konna 是否检查过node_info在哪个设备 */
 };
 
 /*
@@ -57,6 +58,8 @@ struct node_info {
 	block_t	blk_addr;	/* block address of the node */
 	unsigned char version;	/* version of the node */
 	unsigned char flag;	/* for node information bits */
+	unsigned char on_pm;/* 用于判断node page是否在pm上 */
+	bool changed;/* 判断ndoe page的存储位置是否改变 */
 };
 
 /* konna: for node info on nvm*/
@@ -87,6 +90,9 @@ struct nat_entry {
 #define nat_set_ino(nat, i)		((nat)->ni.ino = (i))
 #define nat_get_version(nat)		((nat)->ni.version)
 #define nat_set_version(nat, v)		((nat)->ni.version = (v))
+// konna
+#define nat_get_onpm(nat)		((nat)->ni.on_pm)
+#define nat_set_onpm(nat, o)		((nat)->ni.on_pm = (o))
 
 #define inc_node_version(version)	(++(version))
 
@@ -99,6 +105,8 @@ static inline void copy_node_info(struct node_info *dst,
 	dst->version = src->version;
 	/* should not copy flag here */
 	//dst->flag |= (src->flag & (0x01 << ON_NVM));
+	dst->on_pm = src->on_pm;
+	// dst->changed = src->changed;
 }
 
 //konna
@@ -125,6 +133,23 @@ static inline bool get_nat_flag(struct nat_entry *ne, unsigned int type)
 	unsigned char mask = 0x01 << type;
 	return ne->ni.flag & mask;
 }
+
+// // konna
+// static inline void set_ni_flag(struct node_info *ni,
+// 				unsigned int type, bool set)
+// {
+// 	unsigned char mask = 0x01 << type;
+// 	if (set)
+// 		ni->flag |= mask;
+// 	else
+// 		ni->flag &= ~mask;
+// }
+// //konna
+// static inline bool get_ni_flag(struct node_info *ni, unsigned int type)
+// {
+// 	unsigned char mask = 0x01 << type;
+// 	return ni->flag & mask;
+// }
 
 static inline void nat_reset_flag(struct nat_entry *ne)
 {

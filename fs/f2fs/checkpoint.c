@@ -104,12 +104,12 @@ out:
 	return page;
 }
 
-static int read_page_from_pm(void *src, struct page *dst, size_t size)
+int read_page_from_pm(void *src, struct page *dst, size_t size)
 {
 	int err;
 
 	err = __copy_to_user_inatomic(page_address(dst), src, size);
-	printk("read pm page %llx\n", (u64)src);
+	// printk("read pm page %llx\n", (u64)src);
 	if(err)
 		return err;
 	else{
@@ -396,11 +396,13 @@ int f2fs_ra_meta_pages_on_pm(struct f2fs_sb_info *sbi, block_t start, int nrpage
 			/* get sit block addr */
 			offset = current_sit_addr(sbi,
 					blkno * SIT_ENTRY_PER_BLOCK);
+			src = p_va_start + ((u64)offset<<PAGE_SHIFT);
 			break;
 		case META_SSA:
 		case META_CP:
 		case META_POR:
 			offset = blkno;
+			src = p_va_start + ((u64)offset<<PAGE_SHIFT);
 			break;
 		default:
 			BUG();
@@ -1748,6 +1750,14 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	return unlikely(f2fs_cp_error(sbi)) ? -EIO : 0;
 }
 
+// konna
+static int f2fs_flush_node_page_bitmap(struct f2fs_sb_info *sbi)
+{
+	struct f2fs_nm_info *nm_i = NM_I(sbi);
+
+	return __copy_from_user_inatomic_nocache(PM_I(sbi)->p_ndoe_page_bitmap_va_start, nm_i->node_page_bitmap_on_pm, nm_i->node_page_bitmap_on_pm_size);
+}
+
 int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
@@ -1815,6 +1825,15 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		goto stop;
 
 	f2fs_flush_sit_entries(sbi, cpc);
+
+	/* konna : write node page bitmap to pm */
+	if((cpc->reason & CP_UMOUNT)){
+		err = f2fs_flush_node_page_bitmap(sbi);
+		if(err){
+			f2fs_err(sbi, "flush node page bitmap error!");
+			goto stop;
+		} 
+	}
 
 	/* save inmem log status */
 	f2fs_save_inmem_curseg(sbi);

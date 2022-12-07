@@ -268,6 +268,10 @@ struct sit_info {
 	unsigned long *pm_sentries_bitmap;
 	/* for sum on pm */
 	unsigned long *pm_summary_bitmap;
+	/* for data block on pm */
+	unsigned long *pm_data_block_bitmap;
+	unsigned int pm_data_block_bitmap_size;
+	unsigned int pm_data_block_bitmap_pages;
 
 	/* for cost-benefit algorithm in cleaning procedure */
 	unsigned long long elapsed_time;	/* elapsed time after mount */

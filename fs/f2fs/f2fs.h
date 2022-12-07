@@ -662,8 +662,8 @@ struct extent_tree {
 				F2FS_MAP_UNWRITTEN)
 
 struct f2fs_map_blocks {
-	block_t m_pblk;
-	block_t m_lblk;
+	block_t m_pblk;				// 起始物理块
+	block_t m_lblk;				// 起始逻辑块
 	unsigned int m_len;
 	unsigned int m_flags;
 	pgoff_t *m_next_pgofs;		/* point next possible non-hole pgofs */
@@ -926,6 +926,12 @@ struct f2fs_nm_info {
 	unsigned char **free_nid_bitmap;/* 每个nat block的空闲nid位图 */
 	unsigned char *nat_block_bitmap;/* 标记nat block的nid位图是否在free_nid_bitmap缓存中 */ 
 	unsigned short *free_nid_count;	/* free nid count of NAT block */
+
+	/* for node page on pm */
+	struct rw_semaphore np_bitmap_lock;	/* 位图的读写锁 */
+	unsigned long *node_page_bitmap_on_pm;/* 每个nid对应一个位，为0就在ssd上，被nat_tree_lock保护 */
+	unsigned int node_page_bitmap_on_pm_size;/* 位图字节数 */
+	unsigned int node_page_bitmap_pages;/* 位图页数 */
 
 	/* for checkpoint */
 	char *nat_bitmap;		/* NAT bitmap pointer */
@@ -1419,6 +1425,24 @@ struct decompress_io_ctx {
 #define MAX_COMPRESS_LOG_SIZE		8
 #define MAX_COMPRESS_WINDOW_SIZE(log_size)	((PAGE_SIZE) << (log_size))
 
+#define F2FS_PM_SUPER_MAGIC 0xaabb
+#define F2FS_PM_SUPER_ADDR (3UL<<PAGE_SHIFT)
+
+struct f2fs_pm_super{
+	unsigned int magic;
+
+	unsigned int nr_blocks;
+	unsigned int valid_node_blk_count;
+
+	block_t cp_blkaddr;
+	block_t sit_blkaddr;
+	block_t nat_blkaddr;
+	block_t ssa_blkaddr;
+	block_t ndb_blkaddr;
+	block_t fbb_blkaddr;
+	block_t frea_area_blkaddr;
+};
+
 /* struct for pm information */
 struct f2fs_pm_info{
 	char device_path[DISK_NAME_LEN];	// pm path from mount
@@ -1428,11 +1452,18 @@ struct f2fs_pm_info{
 	unsigned long p_size;	// pm size in bytes
 	phys_addr_t p_pa_start;	// pm physical start address
 
+	/* for pm super block */
+	struct f2fs_pm_super p_fps;
+
 	/* for f2fs meta*/
+	void * p_super_va_start;
 	void * p_cp_va_start;
 	void * p_sit_va_start;
 	void * p_nat_va_start;
 	void * p_ssa_va_start;
+	// void * p_data_block_bitmap_va_start;
+	void * p_ndoe_page_bitmap_va_start;
+	void * p_free_blocks_bitmap_va_start;
 };
 
 struct f2fs_sb_info {
@@ -1844,6 +1875,12 @@ static inline struct f2fs_sm_info *SM_I(struct f2fs_sb_info *sbi)
 static inline struct f2fs_pm_info *PM_I(struct f2fs_sb_info *sbi)
 {
 	return (struct f2fs_pm_info *)(&sbi->pm_info);
+}
+
+/* konna */
+static inline struct f2fs_pm_super *PM_S(struct f2fs_sb_info *sbi)
+{
+	return (struct f2fs_pm_super *)(&sbi->pm_info.p_fps);
 }
 
 static inline struct sit_info *SIT_I(struct f2fs_sb_info *sbi)
@@ -3418,6 +3455,7 @@ void f2fs_update_meta_page(struct f2fs_sb_info *sbi, void *src,
 void f2fs_do_write_meta_page(struct f2fs_sb_info *sbi, struct page *page,
 						enum iostat_type io_type);
 void f2fs_do_write_node_page(unsigned int nid, struct f2fs_io_info *fio);
+int f2fs_do_write_node_page_on_pm(struct f2fs_io_info *fio, bool from_pm, bool *node_page_changed);//konna
 void f2fs_outplace_write_data(struct dnode_of_data *dn,
 			struct f2fs_io_info *fio);
 int f2fs_inplace_write_data(struct f2fs_io_info *fio);
@@ -3462,6 +3500,7 @@ unsigned int f2fs_usable_blks_in_seg(struct f2fs_sb_info *sbi,
  */
 void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io);
 struct page *f2fs_grab_meta_page(struct f2fs_sb_info *sbi, pgoff_t index);
+int read_page_from_pm(void *src, struct page *dst, size_t size);
 struct page *f2fs_get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index);
 struct page *f2fs_get_meta_page_on_pm(struct f2fs_sb_info *sbi, pgoff_t index);//konna
 struct page *f2fs_get_meta_page_retry(struct f2fs_sb_info *sbi, pgoff_t index);
@@ -3473,7 +3512,7 @@ int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 			int type, bool sync);
 int f2fs_ra_meta_pages_on_pm(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 							int type);//konna
-void f2fs_ra_meta_pages_cond(struct f2fs_sb_info *sbi, pgoff_t index);
+void f2fs_ra_meta_pages_cond(struct f2fs_sb_info *sbi, pgoff_t index);// 多是用于数据恢复
 long f2fs_sync_meta_pages(struct f2fs_sb_info *sbi, enum page_type type,
 			long nr_to_write, enum iostat_type io_type);
 void f2fs_add_ino_entry(struct f2fs_sb_info *sbi, nid_t ino, int type);
