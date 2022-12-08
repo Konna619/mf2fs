@@ -3638,10 +3638,8 @@ void f2fs_do_write_node_page(unsigned int nid, struct f2fs_io_info *fio)
 // 写node页
 int f2fs_do_write_node_page_on_pm(struct f2fs_io_info *fio, bool from_pm, bool *node_page_changed)
 {
-	struct f2fs_summary sum;
 	int ret;
 
-	set_summary(&sum, nid, 0, 0);
 	ret = do_write_page_pm(fio, from_pm, node_page_changed);
 	if(!ret)
 		f2fs_update_iostat(fio->sbi, fio->io_type, F2FS_BLKSIZE);
