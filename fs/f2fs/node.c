@@ -3177,7 +3177,7 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 			f2fs_bug_on(sbi, offset < 0);
 			raw_ne = &nat_in_journal(journal, offset);
 			nid_in_journal(journal, offset) = cpu_to_le32(nid);
-			f2fs_info(sbi, "write to journal nid:%u , addr:%u", nid, ne->ni.blk_addr);
+			//f2fs_info(sbi, "write to journal nid:%u , addr:%u", nid, ne->ni.blk_addr);
 		} else {	// 不写journal，到nat页中找到raw_ne的地址
 			raw_ne = &nat_blk->entries[nid - start_nid];
 			//f2fs_info(sbi, "write to pm node table nid:%u , addr:%u, %llx", nid, ne->ni.blk_addr, (u64)p);
